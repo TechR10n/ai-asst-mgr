@@ -1,0 +1,211 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'  # Triggers on version tags like v0.1.0, v1.0.0
+
+permissions:
+  contents: write  # Required to create releases
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history for changelog generation
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: |
+          uv sync
+          uv pip install build twine
+
+      - name: Get version from tag
+        id: get_version
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Verify version matches pyproject.toml
+        run: |
+          TAG_VERSION="${{ steps.get_version.outputs.version }}"
+          PYPROJECT_VERSION=$(grep -Po '(?<=^version = ")[^"]*' pyproject.toml)
+
+          if [ "$TAG_VERSION" != "$PYPROJECT_VERSION" ]; then
+            echo "Error: Tag version ($TAG_VERSION) doesn't match pyproject.toml version ($PYPROJECT_VERSION)"
+            exit 1
+          fi
+
+          echo "✓ Version verified: $TAG_VERSION"
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Get all commits since last tag
+          LAST_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+
+          if [ -z "$LAST_TAG" ]; then
+            echo "First release - including all commits"
+            COMMITS=$(git log --pretty=format:"- %s (%h)" --no-merges)
+          else
+            echo "Commits since $LAST_TAG"
+            COMMITS=$(git log $LAST_TAG..HEAD --pretty=format:"- %s (%h)" --no-merges)
+          fi
+
+          # Group commits by type
+          FEATURES=$(echo "$COMMITS" | grep -E "^- (feat|feature)" || true)
+          FIXES=$(echo "$COMMITS" | grep -E "^- (fix|bugfix)" || true)
+          DOCS=$(echo "$COMMITS" | grep -E "^- (docs|doc)" || true)
+          TESTS=$(echo "$COMMITS" | grep -E "^- (test|tests)" || true)
+          REFACTOR=$(echo "$COMMITS" | grep -E "^- (refactor|refact)" || true)
+          CHORE=$(echo "$COMMITS" | grep -E "^- (chore|build|ci)" || true)
+          OTHER=$(echo "$COMMITS" | grep -vE "^- (feat|feature|fix|bugfix|docs|doc|test|tests|refactor|refact|chore|build|ci)" || true)
+
+          # Build changelog
+          CHANGELOG="## What's Changed\n\n"
+
+          if [ -n "$FEATURES" ]; then
+            CHANGELOG="${CHANGELOG}### ✨ Features\n${FEATURES}\n\n"
+          fi
+
+          if [ -n "$FIXES" ]; then
+            CHANGELOG="${CHANGELOG}### 🐛 Bug Fixes\n${FIXES}\n\n"
+          fi
+
+          if [ -n "$DOCS" ]; then
+            CHANGELOG="${CHANGELOG}### 📚 Documentation\n${DOCS}\n\n"
+          fi
+
+          if [ -n "$TESTS" ]; then
+            CHANGELOG="${CHANGELOG}### ✅ Tests\n${TESTS}\n\n"
+          fi
+
+          if [ -n "$REFACTOR" ]; then
+            CHANGELOG="${CHANGELOG}### ♻️ Refactoring\n${REFACTOR}\n\n"
+          fi
+
+          if [ -n "$CHORE" ]; then
+            CHANGELOG="${CHANGELOG}### 🔧 Chores\n${CHORE}\n\n"
+          fi
+
+          if [ -n "$OTHER" ]; then
+            CHANGELOG="${CHANGELOG}### 📝 Other Changes\n${OTHER}\n\n"
+          fi
+
+          CHANGELOG="${CHANGELOG}\n**Full Changelog**: https://github.com/${{ github.repository }}/compare/${LAST_TAG}...${{ steps.get_version.outputs.tag }}"
+
+          # Save to file
+          echo -e "$CHANGELOG" > /tmp/changelog.md
+          echo "Generated changelog:"
+          cat /tmp/changelog.md
+
+      - name: Run tests
+        run: |
+          uv run pytest tests/ -v --cov=src/ai_asst_mgr --cov-report=term-missing --cov-fail-under=95
+
+      - name: Run type checking
+        run: |
+          uv run mypy src/ tests/ --strict
+
+      - name: Run linting
+        run: |
+          uv run ruff check src/ tests/
+
+      - name: Build package
+        run: |
+          uv build
+          echo "✓ Package built successfully"
+          ls -lh dist/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Release ${{ steps.get_version.outputs.tag }}
+          body_path: /tmp/changelog.md
+          files: |
+            dist/*.whl
+            dist/*.tar.gz
+          draft: false
+          prerelease: ${{ contains(steps.get_version.outputs.tag, 'alpha') || contains(steps.get_version.outputs.tag, 'beta') || contains(steps.get_version.outputs.tag, 'rc') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish to PyPI (optional)
+        if: ${{ !contains(steps.get_version.outputs.tag, 'alpha') && !contains(steps.get_version.outputs.tag, 'beta') && !contains(steps.get_version.outputs.tag, 'rc') }}
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        run: |
+          # Only publish stable releases to PyPI
+          # Requires PYPI_TOKEN secret to be set
+          if [ -n "$TWINE_PASSWORD" ]; then
+            uv run twine upload dist/*
+            echo "✓ Published to PyPI"
+          else
+            echo "⚠ PYPI_TOKEN not set, skipping PyPI publish"
+          fi
+
+      - name: Update CHANGELOG.md
+        run: |
+          # Prepend the new changelog to CHANGELOG.md
+          if [ ! -f CHANGELOG.md ]; then
+            echo "# Changelog" > CHANGELOG.md
+            echo "" >> CHANGELOG.md
+            echo "All notable changes to this project will be documented in this file." >> CHANGELOG.md
+            echo "" >> CHANGELOG.md
+            echo "The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)," >> CHANGELOG.md
+            echo "and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)." >> CHANGELOG.md
+            echo "" >> CHANGELOG.md
+          fi
+
+          # Insert new version section
+          {
+            head -n 6 CHANGELOG.md
+            echo ""
+            echo "## [${{ steps.get_version.outputs.version }}] - $(date +%Y-%m-%d)"
+            echo ""
+            cat /tmp/changelog.md
+            echo ""
+            tail -n +7 CHANGELOG.md
+          } > CHANGELOG.tmp
+
+          mv CHANGELOG.tmp CHANGELOG.md
+
+          echo "✓ Updated CHANGELOG.md"
+
+      - name: Commit CHANGELOG.md
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          git commit -m "docs: update CHANGELOG.md for ${{ steps.get_version.outputs.tag }}" || echo "No changes to commit"
+          git push origin HEAD:main || echo "Failed to push CHANGELOG update"
+
+      - name: Release summary
+        run: |
+          echo "========================================="
+          echo "✅ Release ${{ steps.get_version.outputs.tag }} Complete!"
+          echo "========================================="
+          echo ""
+          echo "📦 Artifacts:"
+          ls -lh dist/
+          echo ""
+          echo "🔗 Release URL:"
+          echo "https://github.com/${{ github.repository }}/releases/tag/${{ steps.get_version.outputs.tag }}"
+          echo ""
+          echo "📝 Changelog updated in CHANGELOG.md"
+          echo ""
