@@ -5,5 +5,6 @@ providing a unified interface for vendor-specific operations.
 """
 
 from ai_asst_mgr.adapters.base import VendorAdapter, VendorInfo, VendorStatus
+from ai_asst_mgr.adapters.claude import ClaudeAdapter
 
-__all__ = ["VendorAdapter", "VendorInfo", "VendorStatus"]
+__all__ = ["ClaudeAdapter", "VendorAdapter", "VendorInfo", "VendorStatus"]
