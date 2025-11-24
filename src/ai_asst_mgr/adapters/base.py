@@ -5,11 +5,15 @@ must implement, along with common data structures and enumerations used across
 all vendors.
 """
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class VendorStatus(Enum):
@@ -112,7 +116,7 @@ class VendorAdapter(ABC):
         """
 
     @abstractmethod
-    def get_config(self, key: str) -> Any:
+    def get_config(self, key: str) -> object:
         """Get a configuration value.
 
         Args:
@@ -126,7 +130,7 @@ class VendorAdapter(ABC):
         """
 
     @abstractmethod
-    def set_config(self, key: str, value: Any) -> None:
+    def set_config(self, key: str, value: object) -> None:
         """Set a configuration value.
 
         Args:
@@ -177,7 +181,7 @@ class VendorAdapter(ABC):
         """
 
     @abstractmethod
-    def health_check(self) -> dict[str, Any]:
+    def health_check(self) -> dict[str, object]:
         """Perform a health check on the vendor configuration.
 
         Returns:
@@ -188,7 +192,7 @@ class VendorAdapter(ABC):
         """
 
     @abstractmethod
-    def audit_config(self) -> dict[str, Any]:
+    def audit_config(self) -> dict[str, object]:
         """Audit the vendor's configuration for security and best practices.
 
         Returns:
@@ -200,7 +204,7 @@ class VendorAdapter(ABC):
         """
 
     @abstractmethod
-    def get_usage_stats(self) -> dict[str, Any]:
+    def get_usage_stats(self) -> dict[str, object]:
         """Get usage statistics for this vendor.
 
         Returns:

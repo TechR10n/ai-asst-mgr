@@ -74,7 +74,8 @@ def test_vendor_info_immutable() -> None:
         homepage="https://test.com",
     )
 
-    with pytest.raises(Exception):  # FrozenInstanceError in Python 3.10+
+    error_pattern = r"(can't set attribute|object has no setter|cannot assign to field)"
+    with pytest.raises((AttributeError, Exception), match=error_pattern):
         info.name = "Changed"  # type: ignore[misc]
 
 
@@ -137,21 +138,21 @@ def test_vendor_adapter_concrete_implementation() -> None:
         def initialize(self) -> None:
             """Initialize."""
 
-        def get_config(self, key: str) -> object:
+        def get_config(self, _key: str) -> object:
             """Get config."""
             return None
 
-        def set_config(self, key: str, value: object) -> None:
+        def set_config(self, _key: str, _value: object) -> None:
             """Set config."""
 
         def backup(self, backup_dir: Path) -> Path:
             """Backup."""
             return backup_dir / "backup"
 
-        def restore(self, backup_path: Path) -> None:
+        def restore(self, _backup_path: Path) -> None:
             """Restore."""
 
-        def sync_from_git(self, repo_url: str, branch: str = "main") -> None:
+        def sync_from_git(self, _repo_url: str, _branch: str = "main") -> None:
             """Sync from git."""
 
         def health_check(self) -> dict[str, object]:
