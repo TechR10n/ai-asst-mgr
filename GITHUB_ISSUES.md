@@ -382,158 +382,219 @@ Create comprehensive unit tests for all vendor adapters.
 
 # Phase 2b: Database Migration
 
-## Issue #11: Create database schema
+## Issue #11: Create vendor-agnostic database schema
 **Labels:** `phase-2b-database`, `type-feature`, `priority-high`
 **Milestone:** MVP (v0.1.0)
+**Status:** ✅ COMPLETED (PR #TBD)
 
 ### Description
-Create the vendor-agnostic database schema with all tables and views.
+Create the vendor-agnostic database schema that extends the existing SessionLogger database to support multiple AI vendors (Claude, Gemini, OpenAI, plugins).
 
 ### Tasks
-- [ ] Create `src/ai_asst_mgr/database/schema.py`
-- [ ] Define SQL for `vendor_profiles` table
-- [ ] Define SQL for `sessions` table (with vendor column)
-- [ ] Define SQL for `events` table (with vendor column)
-- [ ] Define SQL for `subagent_profiles` table (Claude-specific)
-- [ ] Define SQL for `skill_profiles` table (Claude-specific)
-- [ ] Define SQL for `weekly_reviews` table
-- [ ] Define SQL for `weekly_aggregates` table
-- [ ] Define SQL for `coaching_insights` table
-- [ ] Define SQL for all analytical views (8 views)
-- [ ] Add schema versioning
-- [ ] Add schema metadata table
+- [x] Create `src/ai_asst_mgr/database/migrations/001_vendor_agnostic.sql`
+- [x] Define `vendor_profiles` table (vendor registry)
+- [x] Define `vendor_versions` table (model costs/capabilities)
+- [x] Define `session_costs` table (token usage/costs per session)
+- [x] Define `github_integrations` table (GitHub activity attribution)
+- [x] Define `capabilities` table (polymorphic agents/skills/MCP servers/tools)
+- [x] Extend `sessions` table with vendor columns (vendor_id, actor_type, execution_context)
+- [x] Extend `events` table with vendor_id column
+- [x] Rename `subagent_profiles` → `claude_agent_profiles`
+- [x] Rename `skill_profiles` → `claude_skill_profiles`
+- [x] Migrate existing agents/skills to capabilities table
+- [x] Create 23 performance indexes
+- [x] Seed 3 default vendors (claude, gemini, openai)
+- [x] Seed 5 model versions with cost data
+- [x] Create 4 analytical views (vendor_comparison, cost_analysis, github_attribution, capability_performance)
+- [x] Update schema version to 2.0.0
 
 ### Acceptance Criteria
-- [ ] Complete schema defined
-- [ ] All tables have proper indexes
-- [ ] Foreign keys defined
-- [ ] Views created
-- [ ] Schema version tracked
+- [x] Complete schema defined
+- [x] All tables have proper indexes
+- [x] Foreign keys defined with CASCADE
+- [x] Views created for analytics
+- [x] Schema version tracked in metadata
+- [x] Tested on actual database copy (41 agents + skills migrated)
 
-### Estimated Time
-1.5 hours
+### Actual Time
+3 hours (database analysis, schema design, SQL writing, testing)
+
+### Notes
+- Migration uses SQLite-compatible syntax (`INSERT OR IGNORE` instead of `ON CONFLICT`)
+- Preserves all existing SessionLogger data
+- Backwards compatible (existing tables unchanged, only extended)
+- Successfully tested: migrated 5 agents + 36 skills to capabilities table
 
 ---
 
-## Issue #12: Implement DatabaseManager
+## Issue #12: Implement VendorDatabaseManager
 **Labels:** `phase-2b-database`, `type-feature`, `priority-high`
 **Milestone:** MVP (v0.1.0)
 
 ### Description
-Create the DatabaseManager class for all database operations.
+Create the VendorDatabaseManager class for vendor-agnostic database operations, querying the new schema views and tables.
 
 ### Tasks
 - [ ] Create `src/ai_asst_mgr/database/manager.py`
-- [ ] Implement `DatabaseManager` class
-- [ ] Implement `initialize()` - create schema
-- [ ] Implement `get_vendor_stats(vendor, days)` - usage stats
-- [ ] Implement `get_vendor_stats_summary(days)` - all vendors
-- [ ] Implement `get_daily_usage(days)` - for charts
-- [ ] Implement `get_week_stats()` - current week stats
-- [ ] Implement `get_previous_reviews(limit)` - review history
-- [ ] Implement `save_review(data)` - save weekly review
-- [ ] Implement `get_agent_usage_history(agent, days)` - agent stats
-- [ ] Add connection pooling
-- [ ] Add error handling
+- [ ] Implement `VendorDatabaseManager` class
+- [ ] Implement `__init__(db_path)` - connection setup
+- [ ] Implement `get_vendor_comparison()` - query vendor_comparison view
+- [ ] Implement `get_cost_analysis(vendor_id, days)` - query cost_analysis view
+- [ ] Implement `get_github_attribution(vendor_id, activity_type)` - query github_attribution view
+- [ ] Implement `get_capability_performance(vendor_id, capability_type)` - query capability_performance view
+- [ ] Implement `get_vendor_stats(vendor_id, days)` - aggregated usage stats
+- [ ] Implement `get_session_costs(session_id)` - get costs for specific session
+- [ ] Implement `track_github_activity(session_id, vendor_id, actor_type, activity_type, github_url)` - log GitHub events
+- [ ] Implement `update_capability_usage(vendor_id, capability_type, capability_name)` - increment usage counters
+- [ ] Add connection context manager support
+- [ ] Add error handling with descriptive messages
+- [ ] Add type hints (mypy strict)
+- [ ] Write comprehensive docstrings
 
 ### Acceptance Criteria
 - [ ] All query methods implemented
-- [ ] Proper error handling
-- [ ] Connection management
-- [ ] Returns structured data
+- [ ] Uses new vendor-agnostic views/tables
+- [ ] Proper error handling with user-friendly messages
+- [ ] Connection management (context manager)
+- [ ] Returns structured data (dataclasses or TypedDicts)
+- [ ] Type-safe (mypy --strict passing)
+- [ ] Comprehensive unit tests (95%+ coverage)
 
 ### Estimated Time
-2 hours
+3 hours (implementation + tests)
+
+### Dependencies
+- Issue #11 (database schema) - completed
 
 ---
 
-## Issue #13: Migrate SessionLogger to VendorSessionTracker
-**Labels:** `phase-2b-database`, `type-refactor`, `priority-high`
+## Issue #13: Create VendorSessionTracker
+**Labels:** `phase-2b-database`, `type-feature`, `priority-high`
 **Milestone:** MVP (v0.1.0)
 
 ### Description
-Refactor the existing SessionLogger from ~/.claude/tools/ to be vendor-agnostic.
+Create a vendor-agnostic session tracking class that logs sessions/events for any AI vendor (Claude, Gemini, OpenAI) to the new database schema.
 
 ### Tasks
 - [ ] Create `src/ai_asst_mgr/tracking/session_tracker.py`
-- [ ] Copy code from `~/.claude/tools/session_logger.py`
-- [ ] Rename `SessionLogger` to `VendorSessionTracker`
-- [ ] Add `vendor` parameter to `start_session()`
-- [ ] Add `vendor` parameter to `log_tool_call()`
-- [ ] Add `vendor` parameter to all event logging methods
-- [ ] Update all SQL queries to include vendor filter
-- [ ] Update database path to use platformdirs
-- [ ] Keep all existing functionality (credential redaction, etc.)
-- [ ] Update docstrings
+- [ ] Implement `VendorSessionTracker` class
+- [ ] Implement `start_session(vendor_id, project_name, actor_type, execution_context)`
+- [ ] Implement `end_session(session_id, outcome, summary)`
+- [ ] Implement `log_event(session_id, event_type, details)`
+- [ ] Implement `log_tool_call(session_id, tool_name, duration_ms)`
+- [ ] Implement `log_agent_spawn(session_id, agent_name)`
+- [ ] Implement `log_error(session_id, error_type, error_message)`
+- [ ] Implement `track_session_cost(session_id, vendor_id, input_tokens, output_tokens, cost_usd)`
+- [ ] Implement `track_github_activity(session_id, vendor_id, actor_type, activity_type, github_url)`
+- [ ] Implement credential redaction for sensitive data
+- [ ] Add database path using platformdirs
+- [ ] Add connection pooling/reuse
+- [ ] Add type hints (mypy strict)
+- [ ] Write comprehensive docstrings
+- [ ] Create unit tests (95%+ coverage)
 
 ### Acceptance Criteria
-- [ ] All SessionLogger functionality preserved
-- [ ] Vendor parameter added to all methods
-- [ ] Works with new schema
+- [ ] Vendor-agnostic (works with any vendor)
+- [ ] Logs to new schema tables (sessions, events, session_costs, github_integrations)
+- [ ] Credential redaction for API keys/tokens
 - [ ] Uses platformdirs for database path
+- [ ] Type-safe (mypy --strict passing)
+- [ ] Well-tested (95%+ coverage)
+- [ ] Clear error messages
 
 ### Estimated Time
-1.5 hours
+3 hours (implementation + tests)
+
+### Dependencies
+- Issue #11 (database schema) - completed
+
+### Notes
+- This is a NEW implementation, not a refactor of existing SessionLogger
+- Existing SessionLogger remains in ~/.claude/tools/ for Claude Code
+- VendorSessionTracker is for ai-asst-mgr to track ALL vendors
 
 ---
 
-## Issue #14: Create database migration tool
-**Labels:** `phase-2b-database`, `type-feature`, `priority-medium`
+## Issue #14: Create database migration framework
+**Labels:** `phase-2b-database`, `type-feature`, `priority-high`
 **Milestone:** MVP (v0.1.0)
+**Status:** ✅ COMPLETED (PR #TBD)
 
 ### Description
-Create a tool to migrate the existing Claude sessions.db to the new schema.
+Create a migration framework to safely apply schema changes to the database, with backup and rollback capabilities.
 
 ### Tasks
-- [ ] Create `src/ai_asst_mgr/database/migrations.py`
-- [ ] Implement `migrate_from_claude_sessions()` function
-- [ ] Copy existing database to new location
-- [ ] Add `vendor='claude'` to all sessions rows
-- [ ] Add `vendor='claude'` to all events rows
-- [ ] Create vendor_profiles entry for Claude
-- [ ] Validate migration
-- [ ] Add rollback capability
-- [ ] Create CLI command: `ai-asst-mgr migrate`
+- [x] Create `src/ai_asst_mgr/database/migrate.py`
+- [x] Implement `Migration` class (version, name, sql_file)
+- [x] Implement `MigrationManager` class
+- [x] Implement `discover_migrations()` - find migration files
+- [x] Implement `get_current_version()` - read from schema_metadata
+- [x] Implement `get_applied_migrations()` - read from _migrations table
+- [x] Implement `get_pending_migrations()` - calculate unapplied migrations
+- [x] Implement `create_backup()` - backup database before migration
+- [x] Implement `apply_migration(migration, dry_run)` - apply single migration
+- [x] Implement `upgrade(target_version, dry_run, backup)` - apply all pending
+- [x] Implement `validate_schema(expected_version)` - verify version
+- [x] Implement `get_migration_status()` - current state
+- [x] Implement `migrate_database()` convenience function
+- [x] Add migration tracking table (_migrations)
+- [x] Add error handling with descriptive messages
+- [x] Create comprehensive unit tests (26 tests, 85.79% coverage)
+- [x] Test on actual database copy (successful migration to v2.0.0)
 
 ### Acceptance Criteria
-- [ ] Can migrate existing database
-- [ ] No data loss
-- [ ] Validation confirms success
-- [ ] Rollback works if needed
+- [x] Can discover and apply migrations
+- [x] Automatic backup creation before migration
+- [x] Dry-run mode for validation
+- [x] No data loss (verified on test database)
+- [x] Rollback via backup restoration
+- [x] Version tracking in schema_metadata
+- [x] Type-safe (mypy --strict passing)
+- [x] Well-tested (26 unit tests passing)
 
-### Estimated Time
-1.5 hours
+### Actual Time
+2.5 hours (implementation + tests + real database testing)
+
+### Dependencies
+- Issue #11 (database schema) - completed
+
+### Notes
+- Migration framework similar to Alembic but simpler
+- Migrations are SQL files named `NNN_name.sql` (e.g., `001_vendor_agnostic.sql`)
+- Framework handles multiple migrations in sequence
+- Tested successfully on ~/Data/claude-sessions/sessions.db
+- Migrated 5 agents + 36 skills without data loss
 
 ---
 
 # Phase 3: Core CLI
 
 ## Issue #15: Setup Typer CLI application
-**Labels:** `phase-3-cli`, `type-feature`, `priority-high`
+**Labels:** `phase-3-cli`, `type-feature`, `priority-high`, `duplicate`
 **Milestone:** MVP (v0.1.0)
+**Status:** ✅ DUPLICATE - Completed in Phase 1 (PR #62)
 
 ### Description
 Create the main CLI application structure with Typer and Rich.
 
-### Tasks
-- [ ] Create `src/ai_asst_mgr/cli.py`
-- [ ] Initialize Typer app
-- [ ] Setup Rich console
-- [ ] Add version callback
-- [ ] Add help text
-- [ ] Configure app metadata
-- [ ] Add common options (verbose, quiet, etc.)
-- [ ] Setup error handling
-- [ ] Add loading indicators
+### Reason for Closure
+This issue is a **duplicate**. The Typer CLI application was already created in Phase 1 (Issue #1) as part of the initial project setup.
 
-### Acceptance Criteria
-- [ ] Can run `ai-asst-mgr --version`
-- [ ] Can run `ai-asst-mgr --help`
-- [ ] Rich output working
-- [ ] Error messages clear
+**Evidence:**
+- `src/ai_asst_mgr/cli.py` already exists with 63 lines
+- Typer app initialized with Rich console
+- Version callback implemented: `ai-asst-mgr --version` works
+- Help text working: `ai-asst-mgr --help` works
+- Error handling in place
+- Three command stubs already created: `status`, `init`, `health`
 
-### Estimated Time
-1 hour
+**Created in:** PR #62 (feat: initial project setup with complete automation)
+
+### Recommendation
+**CLOSE** this issue as duplicate and continue with Issue #16 (implement status command) which just needs to wire the existing CLI command to the VendorRegistry.
+
+### Original Estimated Time
+1 hour (already spent in Phase 1)
 
 ---
 
@@ -1761,25 +1822,229 @@ Document all changes in CHANGELOG.
 
 ---
 
+# Phase 11: Enhanced MVP Features
+
+## Issue #58: Configuration Schema Validation
+**Labels:** `phase-11-enhanced`, `type-feature`, `priority-medium`
+**Milestone:** MVP (v0.1.0)
+
+### Description
+Implement JSON/TOML schema validation for vendor configurations with better error messages when configs are malformed.
+
+### Tasks
+- [ ] Create `src/ai_asst_mgr/validation/schemas.py`
+- [ ] Define JSON Schema for Claude settings.json
+- [ ] Define TOML Schema for OpenAI config.toml
+- [ ] Define JSON Schema for Gemini settings.json
+- [ ] Implement `validate_config(vendor, config_dict)` function
+- [ ] Generate user-friendly error messages for validation failures
+- [ ] Add `--validate` flag to `ai-asst-mgr config` command
+- [ ] Integrate validation into adapter `set_config()` methods
+- [ ] Add validation to `ai-asst-mgr doctor` command
+- [ ] Write comprehensive unit tests (95%+ coverage)
+
+### Acceptance Criteria
+- [ ] All vendor config formats validated
+- [ ] Clear error messages (e.g., "Missing required field 'api_key' in settings.json")
+- [ ] Integrated into config commands
+- [ ] Type-safe (mypy --strict passing)
+- [ ] Well-tested (95%+ coverage)
+
+### Estimated Time
+2 hours
+
+---
+
+## Issue #59: Plugin Architecture
+**Labels:** `phase-11-enhanced`, `type-feature`, `priority-medium`
+**Milestone:** MVP (v0.1.0)
+
+### Description
+Allow users to add custom vendor adapters via plugin system, enabling support for vendors beyond Claude/Gemini/OpenAI.
+
+### Tasks
+- [ ] Create `src/ai_asst_mgr/plugins/loader.py`
+- [ ] Define plugin interface (must inherit from VendorAdapter)
+- [ ] Implement `discover_plugins(plugin_dir)` - find plugins in ~/.ai-asst-mgr/plugins/
+- [ ] Implement `load_plugin(plugin_path)` - dynamically import plugin class
+- [ ] Implement `register_plugin(vendor_id, plugin_class)` - add to VendorRegistry
+- [ ] Create example plugin template at `docs/examples/custom_vendor_plugin.py`
+- [ ] Add `ai-asst-mgr plugins list` command
+- [ ] Add `ai-asst-mgr plugins validate <path>` command
+- [ ] Document plugin development guide
+- [ ] Write comprehensive unit tests (95%+ coverage)
+
+### Acceptance Criteria
+- [ ] Can discover plugins from ~/.ai-asst-mgr/plugins/
+- [ ] Can load and register custom vendors
+- [ ] Example plugin template provided
+- [ ] CLI commands for plugin management
+- [ ] Clear documentation for plugin development
+- [ ] Type-safe (mypy --strict passing)
+- [ ] Well-tested (95%+ coverage)
+
+### Estimated Time
+3 hours
+
+---
+
+## Issue #60: Dry-Run Mode
+**Labels:** `phase-11-enhanced`, `type-feature`, `priority-high`
+**Milestone:** MVP (v0.1.0)
+
+### Description
+Add `--dry-run` flag to all destructive operations to preview changes before applying them, improving safety for production use.
+
+### Tasks
+- [ ] Add `--dry-run` global flag to CLI
+- [ ] Implement dry-run for `ai-asst-mgr init` (show what would be created)
+- [ ] Implement dry-run for `ai-asst-mgr config set` (show what would change)
+- [ ] Implement dry-run for `ai-asst-mgr backup` (show what would be backed up)
+- [ ] Implement dry-run for `ai-asst-mgr restore` (show what would be restored)
+- [ ] Implement dry-run for `ai-asst-mgr sync` (show what would be synced)
+- [ ] Add clear output prefix: `[DRY RUN]` for all dry-run operations
+- [ ] Add `--dry-run` to all VendorAdapter methods that modify state
+- [ ] Update documentation with dry-run examples
+- [ ] Write comprehensive unit tests (95%+ coverage)
+
+### Acceptance Criteria
+- [ ] All destructive operations support --dry-run
+- [ ] Clear indication when running in dry-run mode
+- [ ] No actual changes made in dry-run mode
+- [ ] Output shows exactly what would happen
+- [ ] Type-safe (mypy --strict passing)
+- [ ] Well-tested (95%+ coverage)
+
+### Estimated Time
+2.5 hours
+
+---
+
+## Issue #61: Config Diff Tool
+**Labels:** `phase-11-enhanced`, `type-feature`, `priority-low`
+**Milestone:** MVP (v0.1.0)
+
+### Description
+Implement `ai-asst-mgr diff` command to compare configurations across vendors or compare local vs remote (git).
+
+### Tasks
+- [ ] Create `src/ai_asst_mgr/operations/diff.py`
+- [ ] Implement `compare_configs(vendor1, vendor2)` - compare two vendor configs
+- [ ] Implement `compare_with_git(vendor, git_url, branch)` - compare local vs remote
+- [ ] Implement Rich-formatted diff output (side-by-side with colors)
+- [ ] Add `ai-asst-mgr diff <vendor1> <vendor2>` command
+- [ ] Add `ai-asst-mgr diff <vendor> --git <url>` command
+- [ ] Add `--format` option (unified, side-by-side, json)
+- [ ] Support nested config comparison (handle JSON/TOML structures)
+- [ ] Highlight meaningful differences (ignore whitespace, formatting)
+- [ ] Write comprehensive unit tests (95%+ coverage)
+
+### Acceptance Criteria
+- [ ] Can compare configs across vendors
+- [ ] Can compare local vs remote git configs
+- [ ] Rich-formatted, colored diff output
+- [ ] Multiple output formats supported
+- [ ] Type-safe (mypy --strict passing)
+- [ ] Well-tested (95%+ coverage)
+
+### Estimated Time
+2.5 hours
+
+---
+
+## Issue #62: Automated Config Fixes (doctor --fix)
+**Labels:** `phase-11-enhanced`, `type-feature`, `priority-high`
+**Milestone:** MVP (v0.1.0)
+
+### Description
+Add `--fix` flag to `ai-asst-mgr doctor` command to automatically fix common issues (permissions, missing directories, etc.).
+
+### Tasks
+- [ ] Add `--fix` flag to doctor command
+- [ ] Implement auto-fix for missing directories (create them)
+- [ ] Implement auto-fix for incorrect permissions (chmod 700 for config dirs)
+- [ ] Implement auto-fix for missing config files (create defaults)
+- [ ] Implement auto-fix for malformed JSON/TOML (offer to recreate)
+- [ ] Implement guided setup for missing API keys (interactive prompts)
+- [ ] Add confirmation prompts for destructive fixes (unless --yes flag)
+- [ ] Add `--yes` flag to skip confirmations
+- [ ] Log all fixes to stdout with clear messages
+- [ ] Write comprehensive unit tests (95%+ coverage)
+
+### Acceptance Criteria
+- [ ] Can fix common configuration issues automatically
+- [ ] Clear confirmation prompts for destructive actions
+- [ ] Detailed output of what was fixed
+- [ ] Safe defaults (no data loss)
+- [ ] Type-safe (mypy --strict passing)
+- [ ] Well-tested (95%+ coverage)
+
+### Estimated Time
+3 hours
+
+---
+
+## Issue #63: Health Score Dashboard (Rich TUI)
+**Labels:** `phase-11-enhanced`, `type-feature`, `priority-medium`
+**Milestone:** MVP (v0.1.0)
+
+### Description
+Create a real-time Terminal UI dashboard using Rich to display health scores and status for all vendors, replacing the basic text output.
+
+### Tasks
+- [ ] Create `src/ai_asst_mgr/ui/dashboard.py`
+- [ ] Implement Rich Live display with auto-refresh
+- [ ] Create health score gauge (0-100) with color coding
+- [ ] Create vendor status table with live updates
+- [ ] Display key metrics: installed, configured, healthy, agents/skills count
+- [ ] Add color coding: green (healthy), yellow (warning), red (error)
+- [ ] Add `ai-asst-mgr dashboard` command
+- [ ] Add `--refresh` option (default: 5 seconds)
+- [ ] Add keyboard shortcuts: q (quit), r (refresh now), h (help)
+- [ ] Make dashboard responsive to terminal size
+- [ ] Write comprehensive unit tests (95%+ coverage)
+
+### Acceptance Criteria
+- [ ] Real-time dashboard with auto-refresh
+- [ ] Health scores calculated and displayed
+- [ ] Color-coded status indicators
+- [ ] Keyboard navigation working
+- [ ] Terminal responsive design
+- [ ] Type-safe (mypy --strict passing)
+- [ ] Well-tested (95%+ coverage)
+
+### Estimated Time
+3 hours
+
+---
+
 ## Summary Statistics
 
-**Total Issues:** 57
-**Phases:** 10
+**Total Issues:** 63 (originally 57, added 6 new features)
+**Phases:** 11 (added Phase 11: Enhanced MVP Features)
 **Milestones:** 2
-- MVP (v0.1.0): 24 issues
+- MVP (v0.1.0): 30 issues (24 original + 6 new)
 - Full Release (v1.0.0): 33 issues
 
 **By Priority:**
-- High: 42 issues
-- Medium: 13 issues
+- High: 44 issues (+2: dry-run, automated fixes)
+- Medium: 17 issues (+4: schema validation, plugins, dashboard, config diff)
 - Low: 2 issues
 
 **By Type:**
-- Feature: 53 issues
+- Feature: 59 issues (+6 new features)
 - Docs: 3 issues
 - Refactor: 1 issue
 
-**Estimated Total Time:** ~70 hours
+**Estimated Total Time:** ~86 hours (70 hours original + 16 hours new features)
+
+**New Features Added (Phase 11):**
+1. Issue #58: Configuration Schema Validation (2h)
+2. Issue #59: Plugin Architecture (3h)
+3. Issue #60: Dry-Run Mode (2.5h)
+4. Issue #61: Config Diff Tool (2.5h)
+5. Issue #62: Automated Config Fixes (3h)
+6. Issue #63: Health Score Dashboard (3h)
 
 ---
 
