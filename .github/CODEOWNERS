@@ -1,0 +1,13 @@
+# Code Owners
+#
+# This file defines who is responsible for code in this repository.
+# Only designated code owners can approve pull requests.
+#
+# Documentation: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Global owner - all files require review from TechR10n
+* @TechR10n
+
+# You can add specific overrides here if needed in the future:
+# /docs/ @TechR10n @docs-team
+# /src/ai_asst_mgr/vendors/ @TechR10n @vendor-experts

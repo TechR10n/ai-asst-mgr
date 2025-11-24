@@ -1,0 +1,76 @@
+name: Close Stale Issues and PRs
+
+# Automatically mark and close stale issues/PRs
+on:
+  schedule:
+    - cron: '0 0 * * *'  # Run daily at midnight UTC
+  workflow_dispatch:  # Allow manual triggering
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mark/Close Stale Issues and PRs
+        uses: actions/stale@v9
+        with:
+          # GitHub token
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+          # Issue settings
+          stale-issue-message: |
+            This issue has been automatically marked as stale because it has not had recent activity.
+            It will be closed in 7 days if no further activity occurs.
+
+            If this issue is still relevant, please:
+            - Add a comment to keep it open
+            - Provide additional context or updates
+            - Link to related PRs or issues
+
+            Thank you for your contributions! 🙏
+          close-issue-message: |
+            This issue has been automatically closed due to inactivity.
+
+            If you believe this issue is still relevant, feel free to reopen it or create a new issue with updated information.
+
+            Thank you! 🙏
+          days-before-stale: 60  # Mark stale after 60 days
+          days-before-close: 7   # Close 7 days after marking stale
+          stale-issue-label: 'stale'
+
+          # PR settings
+          stale-pr-message: |
+            This pull request has been automatically marked as stale because it has not had recent activity.
+            It will be closed in 14 days if no further activity occurs.
+
+            If you're still working on this PR, please:
+            - Push updates to your branch
+            - Add a comment explaining the status
+            - Request a review when ready
+
+            Thank you for your contribution! 🙏
+          close-pr-message: |
+            This pull request has been automatically closed due to inactivity.
+
+            If you'd like to continue this work:
+            - Reopen this PR with updates
+            - Create a new PR from an updated branch
+
+            Thank you! 🙏
+          days-before-pr-stale: 30   # Mark stale after 30 days
+          days-before-pr-close: 14   # Close 14 days after marking stale
+          stale-pr-label: 'stale'
+
+          # Exemptions
+          exempt-issue-labels: 'priority-high,blocked,help-wanted'
+          exempt-pr-labels: 'priority-high,blocked'
+          exempt-milestones: true  # Don't mark issues in milestones as stale
+          exempt-assignees: true   # Don't mark assigned issues as stale
+
+          # Operations
+          operations-per-run: 30
+          remove-stale-when-updated: true
+          ascending: false  # Process newest first
