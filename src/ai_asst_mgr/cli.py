@@ -3,10 +3,16 @@
 This module provides the main CLI entry point using Typer for command execution.
 """
 
+from __future__ import annotations
+
 from typing import Annotated
 
 import typer
 from rich.console import Console
+from rich.table import Table
+
+from ai_asst_mgr.adapters.base import VendorStatus
+from ai_asst_mgr.vendors import VendorRegistry
 
 app = typer.Typer(
     name="ai-asst-mgr",
@@ -16,6 +22,46 @@ app = typer.Typer(
 console = Console()
 
 
+def _get_status_display(status: VendorStatus) -> str:
+    """Get display string for vendor status with emoji and color.
+
+    Args:
+        status: VendorStatus enum value.
+
+    Returns:
+        Formatted string with emoji and color markup.
+    """
+    if status == VendorStatus.CONFIGURED:
+        return "[green]✅ Configured[/green]"
+    if status == VendorStatus.INSTALLED:
+        return "[yellow]⚠️  Installed[/yellow]"
+    if status == VendorStatus.NOT_INSTALLED:
+        return "[red]❌ Not Installed[/red]"
+    if status == VendorStatus.RUNNING:
+        return "[green]🟢 Running[/green]"
+    return "[red]❗ Error[/red]"
+
+
+def _get_notes_for_status(status: VendorStatus) -> str:
+    """Get helpful notes based on vendor status.
+
+    Args:
+        status: VendorStatus enum value.
+
+    Returns:
+        Helpful notes string.
+    """
+    if status == VendorStatus.CONFIGURED:
+        return "Ready to use"
+    if status == VendorStatus.INSTALLED:
+        return "Needs configuration"
+    if status == VendorStatus.NOT_INSTALLED:
+        return "Not detected on system"
+    if status == VendorStatus.RUNNING:
+        return "Currently active"
+    return "Configuration error detected"
+
+
 @app.command()
 def status(
     vendor: Annotated[
@@ -23,11 +69,63 @@ def status(
         typer.Option("--vendor", "-v", help="Show status for specific vendor"),
     ] = None,
 ) -> None:
-    """Show status of all AI assistant vendors."""
+    """Show status of all AI assistant vendors.
+
+    Displays a table showing the installation and configuration status
+    of all detected AI vendors (Claude, Gemini, OpenAI).
+
+    Args:
+        vendor: Optional vendor name to show status for a single vendor.
+    """
+    registry = VendorRegistry()
+
+    # Get vendors to display
     if vendor:
-        console.print(f"[blue]Status for {vendor}:[/blue] Not implemented yet")
+        try:
+            vendors_to_show = {vendor: registry.get_vendor(vendor)}
+        except KeyError:
+            console.print(f"[red]Error: Unknown vendor '{vendor}'[/red]")
+            available = ", ".join(registry.get_all_vendors().keys())
+            console.print(f"[yellow]Available vendors: {available}[/yellow]")
+            raise typer.Exit(code=1) from None
     else:
-        console.print("[blue]Vendor Status:[/blue] Not implemented yet")
+        vendors_to_show = registry.get_all_vendors()
+
+    # Create Rich table
+    table = Table(title="AI Assistant Vendor Status", show_header=True, header_style="bold cyan")
+    table.add_column("Vendor", style="bold", width=15)
+    table.add_column("Status", width=20)
+    table.add_column("Config Location", style="dim", width=40)
+    table.add_column("Notes", width=25)
+
+    # Add rows for each vendor
+    for _vendor_name, adapter in vendors_to_show.items():
+        vendor_info = adapter.info
+        vendor_status = adapter.get_status()
+        status_display = _get_status_display(vendor_status)
+        config_location = str(vendor_info.config_dir)
+        notes = _get_notes_for_status(vendor_status)
+
+        table.add_row(
+            vendor_info.name,
+            status_display,
+            config_location,
+            notes,
+        )
+
+    # Display the table
+    console.print(table)
+
+    # Add summary if showing all vendors
+    if not vendor:
+        configured_count = len(registry.get_configured_vendors())
+        installed_count = len(registry.get_installed_vendors())
+        total_count = len(vendors_to_show)
+
+        console.print(
+            f"\n[bold]Summary:[/bold] {configured_count}/{total_count} configured, "
+            f"{installed_count}/{total_count} installed"
+        )
 
 
 @app.command()
