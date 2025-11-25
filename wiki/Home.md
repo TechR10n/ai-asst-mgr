@@ -7,6 +7,47 @@ Welcome to the **ai-asst-mgr development wiki**! This wiki is dedicated to build
 
 ---
 
+## 📊 Current Project Status
+
+**Last Updated:** November 25, 2025
+
+| Metric | Value |
+|--------|-------|
+| **Tests** | 1,520 passing |
+| **Coverage** | 95.03% |
+| **Type Safety** | mypy --strict ✅ |
+| **Security** | bandit passing ✅ |
+| **Python Version** | 3.14 |
+
+### Phase Progress
+
+| Phase | Status | PRs |
+|-------|--------|-----|
+| Phase 1: Foundation | ✅ Complete | #62 |
+| Phase 2: Vendor Adapters | ✅ Complete | #64, #66, #67, #68 |
+| Phase 3: CLI Commands | ✅ Complete | #71, #72 |
+| Phase 5: Coaching System | ✅ Complete | #74 |
+| Phase 6: Backup & Restore | ✅ Complete | #75, #76 |
+| Phase 8: Capabilities | ✅ Complete | #43, #44 |
+| Phase 9: Web Dashboard | ✅ Complete | #45-52 |
+| Phase 10: Testing & Docs | ✅ Complete | #90 |
+| Phase 11: GitHub Integration | 🔄 In Progress | #91 (partial) |
+
+### Current Milestone: Phase 11 - GitHub Integration
+
+**Completed Issues:**
+- ✅ #82 - GitHub Activity Logger
+- ✅ #83 - Vendor Attribution System
+
+**Remaining Issues:**
+- 🔲 #84 - GitHub Activity Dashboard Page
+- 🔲 #85 - Context Separation for GitHub Operations
+- 🔲 #86 - GitHub Projects API Integration
+- 🔲 #87 - Unified GitHub API Module
+- 🔲 #89 - Vendor GitHub Actions Support
+
+---
+
 ## 📚 Wiki Contents
 
 ### Getting Started
