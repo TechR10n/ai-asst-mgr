@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import builtins
-from types import ModuleType  # noqa: TC003 - Used at runtime for type annotation
+from types import ModuleType
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 

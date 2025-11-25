@@ -19,10 +19,12 @@ from rich.table import Table
 from rich.text import Text
 
 from ai_asst_mgr.adapters.base import VendorStatus
+from ai_asst_mgr.coaches import ClaudeCoach, CodexCoach, GeminiCoach, Priority
 from ai_asst_mgr.vendors import VendorRegistry
 
 if TYPE_CHECKING:
     from ai_asst_mgr.adapters.base import VendorAdapter
+    from ai_asst_mgr.coaches.base import CoachBase
 
 app = typer.Typer(
     name="ai-asst-mgr",
@@ -1199,6 +1201,306 @@ def _parse_config_value(value: str) -> object:
     except json.JSONDecodeError:
         # Return as string if not valid JSON
         return value
+
+
+# Coach command helpers
+def _get_coach_for_vendor(vendor_id: str) -> CoachBase:
+    """Get the coach instance for a vendor.
+
+    Args:
+        vendor_id: Vendor identifier (claude, gemini, openai).
+
+    Returns:
+        CoachBase instance for the vendor.
+
+    Raises:
+        typer.Exit: If vendor is unknown.
+    """
+    coaches: dict[str, CoachBase] = {
+        "claude": ClaudeCoach(),
+        "gemini": GeminiCoach(),
+        "openai": CodexCoach(),
+    }
+
+    if vendor_id not in coaches:
+        console.print(f"[red]Error: Unknown vendor '{vendor_id}'[/red]")
+        console.print(f"[yellow]Available vendors: {', '.join(coaches.keys())}[/yellow]")
+        raise typer.Exit(code=1)
+
+    return coaches[vendor_id]
+
+
+def _get_all_coaches() -> dict[str, CoachBase]:
+    """Get all available coaches.
+
+    Returns:
+        Dictionary mapping vendor IDs to coach instances.
+    """
+    return {
+        "claude": ClaudeCoach(),
+        "gemini": GeminiCoach(),
+        "openai": CodexCoach(),
+    }
+
+
+def _display_coach_insights(coach: CoachBase) -> None:
+    """Display insights from a coach in a Rich panel.
+
+    Args:
+        coach: CoachBase instance with analysis results.
+    """
+    insights = coach.get_insights()
+
+    if not insights:
+        console.print(f"[dim]No insights available for {coach.vendor_name}[/dim]")
+        return
+
+    # Create insights table
+    table = Table(show_header=True, header_style="bold cyan", title=f"{coach.vendor_name} Insights")
+    table.add_column("Category", style="dim", width=15)
+    table.add_column("Insight", width=40)
+    table.add_column("Metric", width=25)
+
+    for insight in insights:
+        metric_display = f"{insight.metric_value}"
+        if insight.metric_unit:
+            metric_display += f" {insight.metric_unit}"
+
+        table.add_row(
+            insight.category,
+            f"[bold]{insight.title}[/bold]\n{insight.description}",
+            metric_display,
+        )
+
+    console.print(table)
+
+
+def _display_coach_recommendations(coach: CoachBase) -> None:
+    """Display recommendations from a coach with priority coloring.
+
+    Args:
+        coach: CoachBase instance with analysis results.
+    """
+    recommendations = coach.get_recommendations()
+
+    if not recommendations:
+        msg = f"\n[green]No recommendations for {coach.vendor_name} - looks good![/green]"
+        console.print(msg)
+        return
+
+    console.print(f"\n[bold]{coach.vendor_name} Recommendations:[/bold]\n")
+
+    # Priority colors and emojis
+    priority_styles = {
+        Priority.CRITICAL: ("[red]", "🔴"),
+        Priority.HIGH: ("[yellow]", "🟠"),
+        Priority.MEDIUM: ("[blue]", "🟡"),
+        Priority.LOW: ("[dim]", "🟢"),
+    }
+
+    for rec in recommendations:
+        style, emoji = priority_styles.get(rec.priority, ("[white]", "⚪"))
+        close_style = style.replace("[", "[/")
+
+        panel_content = (
+            f"{rec.description}\n\n"
+            f"[bold]Action:[/bold] {rec.action}\n"
+            f"[bold]Expected Benefit:[/bold] {rec.expected_benefit}"
+        )
+
+        console.print(
+            Panel(
+                panel_content,
+                title=f"{emoji} {style}{rec.title}{close_style}",
+                subtitle=f"[dim]{rec.category} | {rec.priority.value.upper()}[/dim]",
+                border_style=style.strip("[]"),
+            )
+        )
+
+
+def _display_coach_stats(coach: CoachBase) -> None:
+    """Display raw statistics from a coach.
+
+    Args:
+        coach: CoachBase instance with analysis results.
+    """
+    stats = coach.get_stats()
+
+    if not stats:
+        return
+
+    console.print(f"\n[bold]{coach.vendor_name} Statistics:[/bold]")
+
+    table = Table.grid(padding=(0, 2))
+    for key, value in stats.items():
+        # Format booleans nicely
+        if isinstance(value, bool):
+            value_str = "[green]Yes[/green]" if value else "[red]No[/red]"
+        else:
+            value_str = str(value)
+
+        table.add_row(f"[cyan]{key}:[/cyan]", value_str)
+
+    console.print(table)
+
+
+def _compare_vendors(coaches: dict[str, CoachBase]) -> None:
+    """Display cross-vendor comparison.
+
+    Args:
+        coaches: Dictionary of vendor IDs to coach instances.
+    """
+    console.print(Panel.fit("[bold blue]Cross-Vendor Comparison[/bold blue]", border_style="blue"))
+
+    # Create comparison table
+    table = Table(show_header=True, header_style="bold magenta")
+    table.add_column("Metric", style="cyan", width=25)
+
+    for _vendor_id, coach in coaches.items():
+        table.add_column(coach.vendor_name, width=20)
+
+    # Collect stats from all coaches
+    all_stats: dict[str, dict[str, object]] = {}
+    for vendor_id, coach in coaches.items():
+        coach.analyze()
+        all_stats[vendor_id] = coach.get_stats()
+
+    # Find common stat keys
+    all_keys: set[str] = set()
+    for stats in all_stats.values():
+        all_keys.update(stats.keys())
+
+    # Add rows for each stat
+    for key in sorted(all_keys):
+        row = [key]
+        for vendor_id in coaches:
+            value = all_stats[vendor_id].get(key, "-")
+            if isinstance(value, bool):
+                row.append("[green]Yes[/green]" if value else "[red]No[/red]")
+            else:
+                row.append(str(value))
+        table.add_row(*row)
+
+    console.print(table)
+
+    # Recommendation summary
+    console.print("\n[bold]Recommendation Summary:[/bold]")
+    rec_table = Table(show_header=True, header_style="bold")
+    rec_table.add_column("Vendor", width=15)
+    rec_table.add_column("Critical", width=10)
+    rec_table.add_column("High", width=10)
+    rec_table.add_column("Medium", width=10)
+    rec_table.add_column("Low", width=10)
+    rec_table.add_column("Total", width=10)
+
+    for _vendor_id, coach in coaches.items():
+        recs = coach.get_recommendations()
+        counts = dict.fromkeys(Priority, 0)
+        for rec in recs:
+            counts[rec.priority] += 1
+
+        rec_table.add_row(
+            coach.vendor_name,
+            f"[red]{counts[Priority.CRITICAL]}[/red]",
+            f"[yellow]{counts[Priority.HIGH]}[/yellow]",
+            f"[blue]{counts[Priority.MEDIUM]}[/blue]",
+            f"[dim]{counts[Priority.LOW]}[/dim]",
+            str(len(recs)),
+        )
+
+    console.print(rec_table)
+
+
+@app.command()
+def coach(
+    vendor: Annotated[
+        str | None,
+        typer.Option("--vendor", "-v", help="Analyze specific vendor (claude, gemini, openai)"),
+    ] = None,
+    report: Annotated[
+        str | None,
+        typer.Option("--report", "-r", help="Report period: weekly or monthly"),
+    ] = None,
+    compare: Annotated[
+        bool,
+        typer.Option("--compare", "-c", help="Show cross-vendor comparison"),
+    ] = False,
+    export: Annotated[
+        str | None,
+        typer.Option("--export", "-e", help="Export report to file (json or markdown)"),
+    ] = None,
+    export_path: Annotated[
+        Path | None,
+        typer.Option("--output", "-o", help="Output path for exported report"),
+    ] = None,
+) -> None:
+    """Analyze AI assistant usage and get optimization recommendations.
+
+    The coach command analyzes your AI assistant configurations and usage
+    patterns to provide data-driven insights and actionable recommendations.
+
+    Examples:
+        ai-asst-mgr coach                      # Analyze all vendors
+        ai-asst-mgr coach --vendor claude      # Analyze Claude only
+        ai-asst-mgr coach --compare            # Cross-vendor comparison
+        ai-asst-mgr coach --export json        # Export report as JSON
+        ai-asst-mgr coach -v claude -e markdown -o report  # Export Claude report
+
+    Args:
+        vendor: Optional vendor to analyze. If not provided, analyzes all.
+        report: Report period (weekly/monthly). Currently informational.
+        compare: If True, shows cross-vendor comparison.
+        export: Export format (json or markdown).
+        export_path: Output path for exported report.
+    """
+    # Get period days from report option
+    period_days = 7  # Default to weekly
+    if report == "monthly":
+        period_days = 30
+
+    # Handle comparison mode
+    if compare:
+        coaches = _get_all_coaches()
+        _compare_vendors(coaches)
+        return
+
+    # Get coaches to analyze
+    coaches_to_analyze = {vendor: _get_coach_for_vendor(vendor)} if vendor else _get_all_coaches()
+
+    # Analyze each vendor
+    for vendor_id, coach_instance in coaches_to_analyze.items():
+        # Run analysis
+        coach_instance.analyze(period_days=period_days)
+
+        # Display header
+        console.print(
+            Panel.fit(
+                f"[bold blue]{coach_instance.vendor_name} Analysis[/bold blue]",
+                border_style="blue",
+            )
+        )
+
+        # Display insights
+        _display_coach_insights(coach_instance)
+
+        # Display recommendations
+        _display_coach_recommendations(coach_instance)
+
+        # Display stats
+        _display_coach_stats(coach_instance)
+
+        # Export if requested
+        if export:
+            output_path = export_path or Path(f"{vendor_id}_report")
+            try:
+                exported_path = coach_instance.export_report(output_path, format=export)
+                console.print(f"\n[green]Report exported to: {exported_path}[/green]")
+            except (ValueError, RuntimeError) as e:
+                console.print(f"\n[red]Export failed: {e}[/red]")
+
+        # Add spacing between vendors
+        if len(coaches_to_analyze) > 1:
+            console.print("\n" + "=" * 60 + "\n")
 
 
 def main() -> None:
