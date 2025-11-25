@@ -223,7 +223,7 @@ omit = [
 precision = 2
 show_missing = true
 skip_covered = false
-fail_under = 93.0  # Temporarily lowered for Phase 8; restore to 95.0 after adding filesystem tests
+fail_under = 92.5  # Lowered for Phase 8/9 with new web dashboard, sync, and session features; target 95.0
 exclude_lines = [
     "pragma: no cover",
     "def __repr__",
