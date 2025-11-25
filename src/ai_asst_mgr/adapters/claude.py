@@ -8,13 +8,13 @@ from __future__ import annotations
 
 import json
 import shutil
-import subprocess  # nosec B404 - needed for git operations
 import tarfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from ai_asst_mgr.adapters.base import VendorAdapter, VendorInfo, VendorStatus
+from ai_asst_mgr.utils import git_clone, unpack_tar_securely
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -228,13 +228,8 @@ class ClaudeAdapter(VendorAdapter):
             temp_dir.mkdir(exist_ok=True)
 
             with tarfile.open(backup_path, "r:gz") as tar:
-                # Validate tar members to prevent path traversal attacks
-                safe_members = [
-                    member
-                    for member in tar.getmembers()
-                    if not (member.name.startswith("/") or ".." in member.name)
-                ]
-                tar.extractall(temp_dir, members=safe_members)  # nosec B202 - members validated
+                # Use secure unpacking to prevent path traversal attacks
+                unpack_tar_securely(tar, temp_dir)
 
             # Move extracted content to config directory
             extracted_dir = temp_dir / "claude"
@@ -271,13 +266,10 @@ class ClaudeAdapter(VendorAdapter):
             if temp_dir.exists():
                 shutil.rmtree(temp_dir)
 
-            # Clone repository
-            subprocess.run(  # nosec B603 B607 - git command is intentional
-                ["git", "clone", "--branch", branch, "--depth", "1", repo_url, str(temp_dir)],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
+            # Clone repository using secure git_clone utility
+            if not git_clone(repo_url, temp_dir, branch):
+                msg = f"Failed to clone repository: {repo_url}"
+                raise RuntimeError(msg)
 
             # Copy relevant directories to config
             sync_dirs = ["agents", "skills", "commands", "hooks", "templates"]
@@ -297,7 +289,7 @@ class ClaudeAdapter(VendorAdapter):
             # Clean up temp directory
             shutil.rmtree(temp_dir)
 
-        except (subprocess.CalledProcessError, OSError, shutil.Error) as e:
+        except (OSError, shutil.Error) as e:
             error_msg = f"Failed to sync from git: {e}"
             raise RuntimeError(error_msg) from e
 

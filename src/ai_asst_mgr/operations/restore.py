@@ -13,6 +13,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ai_asst_mgr.utils import unpack_members_securely
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -297,9 +299,8 @@ class RestoreManager:
                     temp_dir.mkdir(parents=True, exist_ok=True)
 
                     try:
-                        # Extract matching files to temp
-                        # nosec B202 - members are filtered from trusted backup archive
-                        tar.extractall(temp_dir, members=matching_members)  # nosec B202
+                        # Extract matching files to temp using secure extraction
+                        unpack_members_securely(tar, temp_dir, matching_members)
 
                         # Move to correct location
                         src_dir = temp_dir / root_name / dirname

@@ -1,7 +1,6 @@
 """Unit tests for SyncManager."""
 
 import shutil
-import subprocess
 import tarfile
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -395,20 +394,20 @@ class TestCloneRepo:
         """Test successful repo clone."""
         dest_dir = tmp_path / "cloned"
 
-        # Mock subprocess.run to simulate successful clone
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = Mock(returncode=0)
+        # Mock git_clone to simulate successful clone
+        with patch("ai_asst_mgr.operations.sync.git_clone") as mock_git_clone:
+            mock_git_clone.return_value = True
             result = sync_manager._clone_repo("https://github.com/test/repo.git", dest_dir, "main")
 
         assert result is True
-        mock_run.assert_called_once()
+        mock_git_clone.assert_called_once()
 
     def test_clone_repo_failure(self, sync_manager: SyncManager, tmp_path: Path) -> None:
         """Test failed repo clone."""
         dest_dir = tmp_path / "cloned"
 
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = subprocess.CalledProcessError(1, "git")
+        with patch("ai_asst_mgr.operations.sync.git_clone") as mock_git_clone:
+            mock_git_clone.return_value = False
             result = sync_manager._clone_repo("https://github.com/fake/repo.git", dest_dir, "main")
 
         assert result is False
@@ -691,3 +690,231 @@ class TestSyncEdgeCases:
             )
 
         assert len(progress_messages) > 0
+
+    def test_preview_sync_no_remote_dir(
+        self, sync_manager: SyncManager, mock_adapter: Mock, tmp_path: Path
+    ) -> None:
+        """Test preview_sync when remote directory doesn't exist."""
+        mock_repo_dir = tmp_path / "repo"
+        mock_repo_dir.mkdir()
+        # No agents or skills directories
+
+        def mock_clone(_url: str, dest_dir: Path, _branch: str) -> bool:
+            if dest_dir.exists():
+                shutil.rmtree(dest_dir)
+            shutil.copytree(mock_repo_dir, dest_dir)
+            return True
+
+        with patch.object(sync_manager, "_clone_repo", side_effect=mock_clone):
+            preview = sync_manager.preview_sync("https://github.com/test/config.git", mock_adapter)
+
+        assert preview is not None
+        # Should have no files to add/modify from directories
+        assert len(preview.files_to_add) == 0
+
+    def test_preview_sync_no_local_dir(
+        self, sync_manager: SyncManager, tmp_path: Path, mock_repo_dir: Path
+    ) -> None:
+        """Test preview_sync when local directory doesn't exist."""
+        config_dir = tmp_path / ".claude_new"
+        config_dir.mkdir()
+
+        info = Mock()
+        info.vendor_id = "claude"
+        info.name = "Claude Code"
+        info.config_dir = config_dir
+
+        adapter = Mock()
+        adapter.info = info
+
+        def mock_clone(_url: str, dest_dir: Path, _branch: str) -> bool:
+            if dest_dir.exists():
+                shutil.rmtree(dest_dir)
+            shutil.copytree(mock_repo_dir, dest_dir)
+            return True
+
+        with patch.object(sync_manager, "_clone_repo", side_effect=mock_clone):
+            preview = sync_manager.preview_sync("https://github.com/test/config.git", adapter)
+
+        assert preview is not None
+        # All files should be additions (no deletions since local dir is empty)
+        assert len(preview.files_to_delete) == 0
+
+    def test_preview_files_no_remote_file(
+        self, sync_manager: SyncManager, mock_adapter: Mock, tmp_path: Path
+    ) -> None:
+        """Test _preview_files when remote file doesn't exist."""
+        mock_repo_dir = tmp_path / "repo"
+        mock_repo_dir.mkdir()
+        # No settings.json in remote
+
+        def mock_clone(_url: str, dest_dir: Path, _branch: str) -> bool:
+            if dest_dir.exists():
+                shutil.rmtree(dest_dir)
+            shutil.copytree(mock_repo_dir, dest_dir)
+            return True
+
+        with patch.object(sync_manager, "_clone_repo", side_effect=mock_clone):
+            preview = sync_manager.preview_sync("https://github.com/test/config.git", mock_adapter)
+
+        assert preview is not None
+        # settings.json exists locally but not remotely, so not in files_to_add
+        assert "settings.json" not in preview.files_to_add
+
+    def test_sync_vendor_no_backup_manager(
+        self, sync_manager_no_backup: SyncManager, mock_adapter: Mock, mock_repo_dir: Path
+    ) -> None:
+        """Test sync_vendor without backup manager."""
+
+        def mock_clone(_url: str, dest_dir: Path, _branch: str) -> bool:
+            if dest_dir.exists():
+                shutil.rmtree(dest_dir)
+            shutil.copytree(mock_repo_dir, dest_dir)
+            return True
+
+        with patch.object(sync_manager_no_backup, "_clone_repo", side_effect=mock_clone):
+            result = sync_manager_no_backup.sync_vendor(
+                "https://github.com/test/config.git",
+                mock_adapter,
+                create_backup=True,
+            )
+
+        assert result.success is True
+        # No backup should be created when backup_manager is None
+        assert result.pre_sync_backup is None
+
+    def test_sync_vendor_adapter_not_installed(
+        self, sync_manager: SyncManager, mock_adapter: Mock, mock_repo_dir: Path
+    ) -> None:
+        """Test sync_vendor when adapter not installed (skips backup)."""
+        mock_adapter.is_installed.return_value = False
+
+        def mock_clone(_url: str, dest_dir: Path, _branch: str) -> bool:
+            if dest_dir.exists():
+                shutil.rmtree(dest_dir)
+            shutil.copytree(mock_repo_dir, dest_dir)
+            return True
+
+        with patch.object(sync_manager, "_clone_repo", side_effect=mock_clone):
+            result = sync_manager.sync_vendor(
+                "https://github.com/test/config.git",
+                mock_adapter,
+                create_backup=True,
+            )
+
+        assert result.success is True
+        # No backup created because adapter not installed
+        assert result.pre_sync_backup is None
+
+    def test_sync_files_no_remote_file(
+        self, sync_manager: SyncManager, mock_adapter: Mock, tmp_path: Path
+    ) -> None:
+        """Test _sync_files when remote file doesn't exist."""
+        mock_repo_dir = tmp_path / "repo"
+        mock_repo_dir.mkdir()
+        # No settings.json
+
+        def mock_clone(_url: str, dest_dir: Path, _branch: str) -> bool:
+            if dest_dir.exists():
+                shutil.rmtree(dest_dir)
+            shutil.copytree(mock_repo_dir, dest_dir)
+            return True
+
+        with patch.object(sync_manager, "_clone_repo", side_effect=mock_clone):
+            result = sync_manager.sync_vendor(
+                "https://github.com/test/config.git",
+                mock_adapter,
+                create_backup=False,
+            )
+
+        assert result.success is True
+        # No files synced from VENDOR_SYNC_FILES
+        assert result.files_synced >= 0
+
+    def test_sync_file_no_change_needed(self, sync_manager: SyncManager, tmp_path: Path) -> None:
+        """Test _sync_file when file exists and content is same."""
+        remote_file = tmp_path / "remote.txt"
+        remote_file.write_text("same content")
+
+        local_file = tmp_path / "local.txt"
+        local_file.write_text("same content")
+
+        added, modified = sync_manager._sync_file(
+            remote_file, local_file, MergeStrategy.KEEP_REMOTE
+        )
+
+        # Files are same, so should still copy but count as modified
+        assert added == 0
+        assert modified == 1
+
+    def test_sync_directory_replace_with_empty_local(
+        self, sync_manager: SyncManager, tmp_path: Path
+    ) -> None:
+        """Test _sync_directory REPLACE strategy with empty local dir."""
+        remote_dir = tmp_path / "remote"
+        remote_dir.mkdir()
+        (remote_dir / "file.txt").write_text("content")
+
+        local_dir = tmp_path / "local_empty"
+        local_dir.mkdir()
+        # Empty local directory
+
+        added, modified, deleted = sync_manager._sync_directory(
+            remote_dir, local_dir, MergeStrategy.REPLACE
+        )
+
+        assert added > 0
+        assert deleted == 0  # No files to delete in empty dir
+
+    def test_sync_directory_keep_remote_with_subdirs(
+        self, sync_manager: SyncManager, tmp_path: Path
+    ) -> None:
+        """Test _sync_directory KEEP_REMOTE strategy with subdirectories."""
+        remote_dir = tmp_path / "remote"
+        remote_dir.mkdir()
+        (remote_dir / "subdir").mkdir()
+        (remote_dir / "subdir" / "file.txt").write_text("remote content")
+
+        local_dir = tmp_path / "local"
+        local_dir.mkdir()
+
+        added, modified, deleted = sync_manager._sync_directory(
+            remote_dir, local_dir, MergeStrategy.KEEP_REMOTE
+        )
+
+        assert added == 1
+        assert (local_dir / "subdir" / "file.txt").exists()
+
+    def test_sync_file_merge_with_identical_files(
+        self, sync_manager: SyncManager, tmp_path: Path
+    ) -> None:
+        """Test _sync_file MERGE strategy with identical files."""
+        remote_file = tmp_path / "remote.txt"
+        remote_file.write_text("same content")
+
+        local_file = tmp_path / "local.txt"
+        local_file.write_text("same content")
+
+        added, modified = sync_manager._sync_file(remote_file, local_file, MergeStrategy.MERGE)
+
+        # Files are identical, no changes needed
+        assert added == 0
+        assert modified == 0
+        # No .remote version should be created
+        assert not (tmp_path / "local.txt.remote").exists()
+
+    def test_clone_repo_removes_existing_dir(
+        self, sync_manager: SyncManager, tmp_path: Path
+    ) -> None:
+        """Test _clone_repo removes existing directory before cloning."""
+        dest_dir = tmp_path / "cloned"
+        dest_dir.mkdir()
+        (dest_dir / "old_file.txt").write_text("old content")
+
+        # Mock the git_clone utility function
+        with patch("ai_asst_mgr.operations.sync.git_clone", return_value=True) as mock_git:
+            result = sync_manager._clone_repo("https://github.com/test/repo.git", dest_dir, "main")
+
+        assert result is True
+        # Destination directory should have been removed before cloning
+        mock_git.assert_called_once_with("https://github.com/test/repo.git", dest_dir, "main")

@@ -525,3 +525,147 @@ class TestRestoreEdgeCases:
         directories = restore_manager.get_restorable_directories(empty_archive)
 
         assert directories == []
+
+    def test_preview_restore_single_part_path(
+        self, restore_manager: RestoreManager, mock_adapter: Mock, tmp_path: Path
+    ) -> None:
+        """Test preview_restore handles single-part paths in archive."""
+        # Create archive with root-level files only
+        source_dir = tmp_path / "source"
+        source_dir.mkdir()
+        (source_dir / "root_file.txt").write_text("root content")
+
+        backup_path = tmp_path / "backup.tar.gz"
+        with tarfile.open(backup_path, "w:gz") as tar:
+            tar.add(source_dir / "root_file.txt", arcname="root_file.txt")
+
+        preview = restore_manager.preview_restore(backup_path, mock_adapter)
+
+        assert preview is not None
+        # Single-part paths should not appear in overwrite/create lists
+        assert len(preview.files_to_overwrite) == 0
+        assert len(preview.directories_to_create) == 0
+
+    def test_preview_restore_tar_error_opening(
+        self, restore_manager: RestoreManager, mock_adapter: Mock, tmp_path: Path
+    ) -> None:
+        """Test preview_restore handles TarError when opening archive."""
+        # Create corrupted archive that passes is_tarfile but fails on open
+        corrupt_archive = tmp_path / "corrupt.tar.gz"
+        corrupt_archive.write_bytes(b"\x1f\x8b\x08\x00\x00\x00\x00\x00" + b"x" * 100)
+
+        preview = restore_manager.preview_restore(corrupt_archive, mock_adapter)
+
+        assert preview is None
+
+    def test_restore_vendor_backup_validation_fails(
+        self, restore_manager: RestoreManager, mock_adapter: Mock, tmp_path: Path
+    ) -> None:
+        """Test restore_vendor when backup validation fails."""
+        # Create invalid backup
+        invalid_backup = tmp_path / "invalid.tar.gz"
+        invalid_backup.write_text("not a tar file")
+
+        result = restore_manager.restore_vendor(invalid_backup, mock_adapter)
+
+        assert result.success is False
+        assert "validation failed" in result.error.lower()
+
+    def test_restore_vendor_pre_restore_backup_fails(
+        self,
+        restore_manager: RestoreManager,
+        mock_adapter: Mock,
+        sample_backup: Path,
+        tmp_path: Path,
+    ) -> None:
+        """Test restore_vendor when pre-restore backup creation fails."""
+        # Mock backup method to fail
+        mock_adapter.backup = Mock(side_effect=OSError("Backup failed"))
+        mock_adapter.restore = Mock()
+
+        result = restore_manager.restore_vendor(
+            sample_backup, mock_adapter, create_pre_restore_backup=True
+        )
+
+        # Should still succeed even if pre-restore backup fails
+        assert result.success is True
+        assert result.pre_restore_backup is None
+
+    def test_restore_selective_archive_with_no_root(
+        self, restore_manager: RestoreManager, mock_adapter: Mock, tmp_path: Path
+    ) -> None:
+        """Test restore_selective with archive that has minimal structure."""
+        # Create archive with just the vendor root
+        source_dir = tmp_path / "source"
+        source_dir.mkdir()
+        (source_dir / "file.txt").write_text("content")
+
+        backup_path = tmp_path / "backup.tar.gz"
+        with tarfile.open(backup_path, "w:gz") as tar:
+            tar.add(source_dir, arcname="claude")
+
+        result = restore_manager.restore_selective(
+            backup_path, mock_adapter, directories=["agents"]
+        )
+
+        # Should succeed but restore nothing (no agents directory)
+        assert result.success is True
+        assert result.restored_files == 0
+
+    def test_restore_selective_with_exception_during_extract(
+        self, restore_manager: RestoreManager, mock_adapter: Mock, sample_backup: Path
+    ) -> None:
+        """Test restore_selective handles exception during extraction."""
+        from unittest.mock import patch
+
+        # Mock shutil.rmtree to raise exception
+        with patch("shutil.rmtree", side_effect=OSError("Permission denied")):
+            result = restore_manager.restore_selective(
+                sample_backup, mock_adapter, directories=["agents"]
+            )
+
+        assert result.success is False
+        assert "Permission denied" in result.error
+
+    def test_get_restorable_directories_with_subdirs(
+        self, restore_manager: RestoreManager, tmp_path: Path
+    ) -> None:
+        """Test get_restorable_directories returns only top-level dirs."""
+        # Create archive with nested structure
+        source_dir = tmp_path / "source"
+        source_dir.mkdir()
+        (source_dir / "agents").mkdir()
+        (source_dir / "agents" / "subdir").mkdir()
+        (source_dir / "agents" / "subdir" / "file.md").write_text("content")
+
+        backup_path = tmp_path / "backup.tar.gz"
+        with tarfile.open(backup_path, "w:gz") as tar:
+            tar.add(source_dir, arcname="claude")
+
+        directories = restore_manager.get_restorable_directories(backup_path)
+
+        # Should only have "agents", not "agents/subdir"
+        assert "agents" in directories
+        assert "agents/subdir" not in directories
+
+    def test_get_restorable_directories_tar_error(
+        self, restore_manager: RestoreManager, tmp_path: Path
+    ) -> None:
+        """Test get_restorable_directories handles TarError gracefully."""
+        corrupt_archive = tmp_path / "corrupt.tar.gz"
+        corrupt_archive.write_bytes(b"\x1f\x8b\x08\x00\x00\x00\x00\x00" + b"x" * 100)
+
+        directories = restore_manager.get_restorable_directories(corrupt_archive)
+
+        assert directories == []
+
+    def test_count_files_invalid_archive_tar_error(
+        self, restore_manager: RestoreManager, tmp_path: Path
+    ) -> None:
+        """Test _count_files_in_archive handles TarError gracefully."""
+        corrupt_archive = tmp_path / "corrupt.tar.gz"
+        corrupt_archive.write_bytes(b"not a valid tar")
+
+        count = restore_manager._count_files_in_archive(corrupt_archive)
+
+        assert count == 0
