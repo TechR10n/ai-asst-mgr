@@ -267,20 +267,6 @@ class TestStatusHelperFunctions:
         assert result == "Configuration error detected"
 
 
-def test_init_command() -> None:
-    """Test the init command executes without errors."""
-    result = runner.invoke(app, ["init"])
-    assert result.exit_code == 0
-    assert "Initializing" in result.stdout
-
-
-def test_init_command_with_vendor() -> None:
-    """Test the init command with vendor flag."""
-    result = runner.invoke(app, ["init", "--vendor", "gemini"])
-    assert result.exit_code == 0
-    assert "gemini" in result.stdout.lower()
-
-
 class TestHealthCommand:
     """Tests for the health command."""
 
@@ -962,3 +948,351 @@ class TestDoctorHelperFunctions:
         result = _attempt_fixes(issues)
         # No auto-fix for unrecognized patterns
         assert result == 0
+
+
+class TestInitCommand:
+    """All init command tests - Agent 1."""
+
+    def test_init_all_vendors(self) -> None:
+        """Test init command initializes all vendors."""
+        with patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class:
+            # Setup mock adapters
+            mock_adapter1 = MagicMock(spec=VendorAdapter)
+            mock_adapter1.info.name = "Claude Code"
+            mock_adapter1.is_configured.return_value = False
+            mock_adapter1.initialize.return_value = None
+
+            mock_adapter2 = MagicMock(spec=VendorAdapter)
+            mock_adapter2.info.name = "Gemini"
+            mock_adapter2.is_configured.return_value = False
+            mock_adapter2.initialize.return_value = None
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {
+                "claude": mock_adapter1,
+                "gemini": mock_adapter2,
+            }
+            mock_registry_class.return_value = mock_registry
+
+            result = runner.invoke(app, ["init"])
+
+            assert result.exit_code == 0
+            assert "Initializing Vendor Configurations" in result.stdout
+            assert "Claude Code" in result.stdout
+            assert "Gemini" in result.stdout
+            assert "Initialized" in result.stdout
+            assert "Summary:" in result.stdout
+            assert "Initialized: 2" in result.stdout
+
+            # Verify initialize was called for both
+            mock_adapter1.initialize.assert_called_once()
+            mock_adapter2.initialize.assert_called_once()
+
+    def test_init_specific_vendor(self) -> None:
+        """Test init command with specific vendor flag."""
+        with patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class:
+            # Setup mock adapter
+            mock_adapter = MagicMock(spec=VendorAdapter)
+            mock_adapter.info.name = "Gemini"
+            mock_adapter.is_configured.return_value = False
+            mock_adapter.initialize.return_value = None
+
+            mock_registry = MagicMock()
+            mock_registry.get_vendor.return_value = mock_adapter
+            mock_registry_class.return_value = mock_registry
+
+            result = runner.invoke(app, ["init", "--vendor", "gemini"])
+
+            assert result.exit_code == 0
+            assert "Gemini" in result.stdout
+            assert "Initialized" in result.stdout
+            # Rich may wrap text, so check for both words separately
+            assert "Created" in result.stdout or "configuration" in result.stdout
+            assert "directory" in result.stdout or "defaults" in result.stdout
+            mock_adapter.initialize.assert_called_once()
+            mock_registry.get_vendor.assert_called_once_with("gemini")
+
+    def test_init_specific_vendor_short_flag(self) -> None:
+        """Test init command with short -v vendor flag."""
+        with patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class:
+            # Setup mock adapter
+            mock_adapter = MagicMock(spec=VendorAdapter)
+            mock_adapter.info.name = "Claude Code"
+            mock_adapter.is_configured.return_value = False
+            mock_adapter.initialize.return_value = None
+
+            mock_registry = MagicMock()
+            mock_registry.get_vendor.return_value = mock_adapter
+            mock_registry_class.return_value = mock_registry
+
+            result = runner.invoke(app, ["init", "-v", "claude"])
+
+            assert result.exit_code == 0
+            assert "Claude Code" in result.stdout
+            assert "Initialized" in result.stdout
+
+    def test_init_already_configured_vendor_skips(self) -> None:
+        """Test init command skips already configured vendors."""
+        with patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class:
+            # Setup mock adapter that is already configured
+            mock_adapter = MagicMock(spec=VendorAdapter)
+            mock_adapter.info.name = "Claude Code"
+            mock_adapter.is_configured.return_value = True
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {"claude": mock_adapter}
+            mock_registry_class.return_value = mock_registry
+
+            result = runner.invoke(app, ["init"])
+
+            assert result.exit_code == 0
+            assert "Skipped" in result.stdout
+            assert "Already configured" in result.stdout
+            # Should not call initialize when already configured
+            mock_adapter.initialize.assert_not_called()
+
+    def test_init_force_flag_reinitializes_configured(self) -> None:
+        """Test init command with --force flag reinitializes configured vendors."""
+        with patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class:
+            # Setup mock adapter that is already configured
+            mock_adapter = MagicMock(spec=VendorAdapter)
+            mock_adapter.info.name = "Claude Code"
+            mock_adapter.is_configured.return_value = True
+            mock_adapter.initialize.return_value = None
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {"claude": mock_adapter}
+            mock_registry_class.return_value = mock_registry
+
+            result = runner.invoke(app, ["init", "--force"])
+
+            assert result.exit_code == 0
+            assert "Initialized" in result.stdout
+            assert "Reinitialized configuration" in result.stdout
+            # Should call initialize even though already configured
+            mock_adapter.initialize.assert_called_once()
+
+    def test_init_force_flag_short_form(self) -> None:
+        """Test init command with short -f force flag."""
+        with patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class:
+            # Setup mock adapter
+            mock_adapter = MagicMock(spec=VendorAdapter)
+            mock_adapter.info.name = "Claude Code"
+            mock_adapter.is_configured.return_value = True
+            mock_adapter.initialize.return_value = None
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {"claude": mock_adapter}
+            mock_registry_class.return_value = mock_registry
+
+            result = runner.invoke(app, ["init", "-f"])
+
+            assert result.exit_code == 0
+            assert "Initialized" in result.stdout
+            mock_adapter.initialize.assert_called_once()
+
+    def test_init_dry_run_shows_preview(self) -> None:
+        """Test init command with --dry-run flag shows preview."""
+        with patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class:
+            # Setup mock adapter
+            mock_adapter = MagicMock(spec=VendorAdapter)
+            mock_adapter.info.name = "Claude Code"
+            mock_adapter.is_configured.return_value = False
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {"claude": mock_adapter}
+            mock_registry_class.return_value = mock_registry
+
+            result = runner.invoke(app, ["init", "--dry-run"])
+
+            assert result.exit_code == 0
+            assert "Initialization Preview (Dry Run)" in result.stdout
+            assert "Would initialize" in result.stdout
+            # Rich may wrap text, so check for key words separately
+            assert "Create" in result.stdout or "configuration" in result.stdout
+            assert "directory" in result.stdout or "defaults" in result.stdout
+            # Should NOT call initialize in dry-run mode
+            mock_adapter.initialize.assert_not_called()
+
+    def test_init_dry_run_with_configured_vendor(self) -> None:
+        """Test init --dry-run shows what would happen for configured vendor."""
+        with patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class:
+            # Setup mock adapter that is already configured
+            mock_adapter = MagicMock(spec=VendorAdapter)
+            mock_adapter.info.name = "Claude Code"
+            mock_adapter.is_configured.return_value = True
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {"claude": mock_adapter}
+            mock_registry_class.return_value = mock_registry
+
+            result = runner.invoke(app, ["init", "--dry-run"])
+
+            assert result.exit_code == 0
+            assert "Would skip" in result.stdout
+            mock_adapter.initialize.assert_not_called()
+
+    def test_init_dry_run_with_force(self) -> None:
+        """Test init --dry-run --force shows reinit preview."""
+        with patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class:
+            # Setup mock adapter that is already configured
+            mock_adapter = MagicMock(spec=VendorAdapter)
+            mock_adapter.info.name = "Claude Code"
+            mock_adapter.is_configured.return_value = True
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {"claude": mock_adapter}
+            mock_registry_class.return_value = mock_registry
+
+            result = runner.invoke(app, ["init", "--dry-run", "--force"])
+
+            assert result.exit_code == 0
+            assert "Would initialize" in result.stdout
+            assert "Force reinitialize configuration" in result.stdout
+            mock_adapter.initialize.assert_not_called()
+
+    def test_init_invalid_vendor_name(self) -> None:
+        """Test init command with invalid vendor name."""
+        with patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class:
+            mock_registry = MagicMock()
+            mock_registry.get_vendor.side_effect = KeyError("Unknown vendor")
+            mock_registry.get_all_vendors.return_value = {
+                "claude": MagicMock(),
+                "gemini": MagicMock(),
+            }
+            mock_registry_class.return_value = mock_registry
+
+            result = runner.invoke(app, ["init", "--vendor", "invalid"])
+
+            assert result.exit_code == 1
+            assert "Error: Unknown vendor 'invalid'" in result.stdout
+            assert "Available vendors:" in result.stdout
+
+    def test_init_handles_initialization_error(self) -> None:
+        """Test init command handles initialization errors gracefully."""
+        with patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class:
+            # Setup mock adapter that raises error
+            mock_adapter = MagicMock(spec=VendorAdapter)
+            mock_adapter.info.name = "Claude Code"
+            mock_adapter.is_configured.return_value = False
+            mock_adapter.initialize.side_effect = RuntimeError("Permission denied")
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {"claude": mock_adapter}
+            mock_registry_class.return_value = mock_registry
+
+            result = runner.invoke(app, ["init"])
+
+            assert result.exit_code == 1
+            assert "Failed" in result.stdout
+            assert "Permission denied" in result.stdout
+            assert "Failed: 1" in result.stdout
+
+    def test_init_mixed_results(self) -> None:
+        """Test init command with mixed success, skip, and failure."""
+        with patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class:
+            # Setup mock adapters with different states
+            mock_adapter1 = MagicMock(spec=VendorAdapter)
+            mock_adapter1.info.name = "Claude Code"
+            mock_adapter1.is_configured.return_value = False
+            mock_adapter1.initialize.return_value = None
+
+            mock_adapter2 = MagicMock(spec=VendorAdapter)
+            mock_adapter2.info.name = "Gemini"
+            mock_adapter2.is_configured.return_value = True  # Already configured
+
+            mock_adapter3 = MagicMock(spec=VendorAdapter)
+            mock_adapter3.info.name = "OpenAI"
+            mock_adapter3.is_configured.return_value = False
+            mock_adapter3.initialize.side_effect = RuntimeError("Failed")
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {
+                "claude": mock_adapter1,
+                "gemini": mock_adapter2,
+                "openai": mock_adapter3,
+            }
+            mock_registry_class.return_value = mock_registry
+
+            result = runner.invoke(app, ["init"])
+
+            assert result.exit_code == 1  # Exit code 1 because of failure
+            assert "Initialized: 1" in result.stdout
+            assert "Skipped: 1" in result.stdout
+            assert "Failed: 1" in result.stdout
+
+    def test_init_with_vendor_and_force(self) -> None:
+        """Test init command with both --vendor and --force flags."""
+        with patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class:
+            # Setup mock adapter
+            mock_adapter = MagicMock(spec=VendorAdapter)
+            mock_adapter.info.name = "Gemini"
+            mock_adapter.is_configured.return_value = True
+            mock_adapter.initialize.return_value = None
+
+            mock_registry = MagicMock()
+            mock_registry.get_vendor.return_value = mock_adapter
+            mock_registry_class.return_value = mock_registry
+
+            result = runner.invoke(app, ["init", "--vendor", "gemini", "--force"])
+
+            assert result.exit_code == 0
+            assert "Initialized" in result.stdout
+            assert "Reinitialized configuration" in result.stdout
+            mock_adapter.initialize.assert_called_once()
+
+    def test_init_shows_summary_counts(self) -> None:
+        """Test init command shows correct summary counts."""
+        with patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class:
+            # Setup mock adapters
+            mock_adapter1 = MagicMock(spec=VendorAdapter)
+            mock_adapter1.info.name = "Vendor1"
+            mock_adapter1.is_configured.return_value = False
+            mock_adapter1.initialize.return_value = None
+
+            mock_adapter2 = MagicMock(spec=VendorAdapter)
+            mock_adapter2.info.name = "Vendor2"
+            mock_adapter2.is_configured.return_value = False
+            mock_adapter2.initialize.return_value = None
+
+            mock_adapter3 = MagicMock(spec=VendorAdapter)
+            mock_adapter3.info.name = "Vendor3"
+            mock_adapter3.is_configured.return_value = True
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {
+                "v1": mock_adapter1,
+                "v2": mock_adapter2,
+                "v3": mock_adapter3,
+            }
+            mock_registry_class.return_value = mock_registry
+
+            result = runner.invoke(app, ["init"])
+
+            assert result.exit_code == 0
+            assert "Summary:" in result.stdout
+            assert "Initialized: 2" in result.stdout
+            assert "Skipped: 1" in result.stdout
+            assert "Failed: 0" in result.stdout
+
+    def test_init_handles_adapter_without_info(self) -> None:
+        """Test init command handles adapters without info attribute gracefully."""
+        with patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class:
+            # Setup mock adapter without info attribute
+            mock_adapter = MagicMock(spec=["is_configured", "initialize"])
+            mock_adapter.is_configured.return_value = False
+            mock_adapter.initialize.side_effect = RuntimeError("Error")
+
+            # Delete the info attribute to simulate missing attribute
+            del mock_adapter.info
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {"test": mock_adapter}
+            mock_registry_class.return_value = mock_registry
+
+            result = runner.invoke(app, ["init"])
+
+            assert result.exit_code == 1
+            # Should show vendor name (test) as fallback
+            assert "test" in result.stdout
+            assert "Failed" in result.stdout

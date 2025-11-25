@@ -9,7 +9,7 @@ import platform
 import shutil
 import sys
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import typer
 from rich.console import Console
@@ -19,6 +19,9 @@ from rich.text import Text
 
 from ai_asst_mgr.adapters.base import VendorStatus
 from ai_asst_mgr.vendors import VendorRegistry
+
+if TYPE_CHECKING:
+    from ai_asst_mgr.adapters.base import VendorAdapter
 
 app = typer.Typer(
     name="ai-asst-mgr",
@@ -180,20 +183,6 @@ def status(
             f"\n[bold]Summary:[/bold] {configured_count}/{total_count} configured, "
             f"{installed_count}/{total_count} installed"
         )
-
-
-@app.command()
-def init(
-    vendor: Annotated[
-        str | None,
-        typer.Option("--vendor", "-v", help="Initialize specific vendor"),
-    ] = None,
-) -> None:
-    """Initialize AI assistant vendor configurations."""
-    if vendor:
-        console.print(f"[green]Initializing {vendor}...[/green]")
-    else:
-        console.print("[green]Initializing all vendors...[/green]")
 
 
 @app.command()
@@ -750,6 +739,236 @@ def _attempt_fixes(issues: list[dict[str, str]]) -> int:
         # For safety, we don't auto-fix permission issues
 
     return fixed
+
+
+@app.command()
+def init(
+    vendor: Annotated[
+        str | None,
+        typer.Option("--vendor", "-v", help="Initialize specific vendor"),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Show what would be initialized without making changes"),
+    ] = False,
+    force: Annotated[
+        bool,
+        typer.Option("--force", "-f", help="Force reinitialization even if already configured"),
+    ] = False,
+) -> None:
+    """Initialize AI assistant vendor configurations.
+
+    Creates necessary directory structures and default configuration files
+    for AI assistant vendors. By default, initializes all installed vendors,
+    or you can specify a single vendor with --vendor.
+
+    Examples:
+        ai-asst-mgr init                  # Initialize all vendors
+        ai-asst-mgr init --vendor gemini  # Initialize specific vendor
+        ai-asst-mgr init --dry-run        # Preview what would be initialized
+        ai-asst-mgr init --force          # Force reinitialize all vendors
+
+    Args:
+        vendor: Optional vendor name to initialize. If not provided, initializes all.
+        dry_run: If True, shows what would be initialized without making changes.
+        force: If True, reinitializes even if already configured.
+    """
+    registry = VendorRegistry()
+
+    # Get vendors to initialize
+    vendors_to_init = _get_vendors_to_init(registry, vendor)
+
+    # Display header
+    _display_init_header(dry_run)
+
+    # Process vendors and collect results
+    results_table, counts = _process_vendor_initializations(
+        vendors_to_init,
+        dry_run=dry_run,
+        force=force,
+    )
+
+    # Display results and summary
+    console.print(results_table)
+    _display_init_summary(counts, dry_run)
+
+    # Exit with appropriate code
+    if counts["failed"] > 0:
+        raise typer.Exit(code=1)
+
+
+# init command helpers
+def _get_vendors_to_init(registry: VendorRegistry, vendor: str | None) -> dict[str, VendorAdapter]:
+    """Get the vendors that should be initialized.
+
+    Args:
+        registry: VendorRegistry instance.
+        vendor: Optional specific vendor name.
+
+    Returns:
+        Dictionary of vendors to initialize.
+
+    Raises:
+        typer.Exit: If vendor is invalid.
+    """
+    if vendor:
+        try:
+            return {vendor: registry.get_vendor(vendor)}
+        except KeyError:
+            console.print(f"[red]Error: Unknown vendor '{vendor}'[/red]")
+            available = ", ".join(registry.get_all_vendors().keys())
+            console.print(f"[yellow]Available vendors: {available}[/yellow]")
+            raise typer.Exit(code=1) from None
+    return registry.get_all_vendors()
+
+
+def _display_init_header(dry_run: bool) -> None:
+    """Display initialization header.
+
+    Args:
+        dry_run: Whether this is a dry run.
+    """
+    if dry_run:
+        console.print(
+            Panel.fit(
+                "[bold blue]Initialization Preview (Dry Run)[/bold blue]",
+                border_style="blue",
+            )
+        )
+    else:
+        console.print(
+            Panel.fit(
+                "[bold green]Initializing Vendor Configurations[/bold green]",
+                border_style="green",
+            )
+        )
+
+
+def _process_vendor_initializations(
+    vendors_to_init: dict[str, VendorAdapter],
+    dry_run: bool,
+    force: bool,
+) -> tuple[Table, dict[str, int]]:
+    """Process vendor initializations and build results table.
+
+    Args:
+        vendors_to_init: Dictionary of vendors to initialize.
+        dry_run: Whether this is a dry run.
+        force: Whether to force reinitialize.
+
+    Returns:
+        Tuple of (results_table, counts_dict).
+    """
+    # Create results table
+    results_table = Table(show_header=True, header_style="bold cyan")
+    results_table.add_column("Vendor", style="bold", width=15)
+    results_table.add_column("Status", width=20)
+    results_table.add_column("Action", width=40)
+
+    # Track results
+    counts = {"initialized": 0, "skipped": 0, "failed": 0}
+
+    # Initialize each vendor
+    for vendor_name, adapter in vendors_to_init.items():
+        try:
+            status, action = _initialize_vendor(
+                adapter,
+                dry_run=dry_run,
+                force=force,
+            )
+
+            # Categorize result and update display
+            status_display, count_category = _categorize_init_result(status)
+            counts[count_category] += 1
+
+            results_table.add_row(
+                adapter.info.name,
+                status_display,
+                action,
+            )
+
+        except Exception as e:
+            counts["failed"] += 1
+            results_table.add_row(
+                adapter.info.name if hasattr(adapter, "info") else vendor_name,
+                "[red]Failed[/red]",
+                f"Error: {e!s}",
+            )
+
+    return results_table, counts
+
+
+def _display_init_summary(counts: dict[str, int], dry_run: bool) -> None:
+    """Display initialization summary.
+
+    Args:
+        counts: Dictionary with count of initialized, skipped, and failed.
+        dry_run: Whether this is a dry run.
+    """
+    console.print("\n[bold]Summary:[/bold]")
+    if dry_run:
+        console.print(f"  Would initialize: {counts['initialized']}")
+        console.print(f"  Would skip: {counts['skipped']}")
+    else:
+        console.print(f"  Initialized: {counts['initialized']}")
+        console.print(f"  Skipped: {counts['skipped']}")
+        console.print(f"  Failed: {counts['failed']}")
+
+
+def _initialize_vendor(
+    adapter: VendorAdapter,
+    dry_run: bool = False,
+    force: bool = False,
+) -> tuple[str, str]:
+    """Initialize a single vendor's configuration.
+
+    Args:
+        adapter: VendorAdapter instance for the vendor.
+        dry_run: If True, only check what would be done.
+        force: If True, reinitialize even if already configured.
+
+    Returns:
+        Tuple of (status, action) strings describing the result.
+
+    Raises:
+        RuntimeError: If initialization fails (propagates from adapter.initialize()).
+    """
+    # Check current status
+    is_configured = adapter.is_configured()
+
+    # Determine if we should initialize
+    if is_configured and not force:
+        return ("Skipped", "Already configured (use --force to reinitialize)")
+
+    # Dry run - just report what would happen
+    if dry_run:
+        if is_configured:
+            return ("Would initialize", "Force reinitialize configuration")
+        return ("Would initialize", "Create configuration directory and defaults")
+
+    # Actually initialize
+    adapter.initialize()
+
+    if is_configured:
+        return ("Initialized", "Reinitialized configuration")
+    return ("Initialized", "Created configuration directory and defaults")
+
+
+def _categorize_init_result(status: str) -> tuple[str, str]:
+    """Categorize initialization result for display and counting.
+
+    Args:
+        status: Status string from _initialize_vendor.
+
+    Returns:
+        Tuple of (status_display, count_category) where count_category is one of:
+        "initialized", "skipped", or "failed".
+    """
+    if "Initialized" in status or "Would initialize" in status:
+        return (f"[green]{status}[/green]", "initialized")
+    if "Skipped" in status:
+        return (f"[yellow]{status}[/yellow]", "skipped")
+    return (f"[red]{status}[/red]", "failed")
 
 
 def main() -> None:
