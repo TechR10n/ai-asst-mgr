@@ -380,3 +380,107 @@ class TestGeminiCoachEdgeCases:
 
         assert "gemini_md_sections" in stats
         assert stats["gemini_md_sections"] == 3
+
+    def test_model_insight_with_default_model_key(
+        self, coach_with_temp_dir: GeminiCoach, temp_gemini_dir: Path
+    ) -> None:
+        """Test model insight uses defaultModel key as fallback."""
+        settings = {"defaultModel": "gemini-ultra"}
+        (temp_gemini_dir / "settings.json").write_text(json.dumps(settings))
+
+        insights = coach_with_temp_dir.get_insights()
+
+        model_insights = [i for i in insights if i.category == "model"]
+        assert len(model_insights) >= 1
+        assert any(i.metric_value == "gemini-ultra" for i in model_insights)
+
+    def test_large_gemini_md_else_branch(
+        self, coach_with_temp_dir: GeminiCoach, temp_gemini_dir: Path
+    ) -> None:
+        """Test recommendation when GEMINI.md exists and config dir exists."""
+        # Create a moderately sized GEMINI.md (not triggering large file warning)
+        gemini_md = temp_gemini_dir / "GEMINI.md"
+        gemini_md.write_text("# Small File\nJust some content")
+
+        recommendations = coach_with_temp_dir.get_recommendations()
+
+        # Should not have large file recommendation
+        large_recs = [r for r in recommendations if "split" in r.title.lower()]
+        # File is small, so no split recommendation
+        assert all(
+            r.priority != Priority.HIGH or "split" not in r.title.lower() for r in large_recs
+        )
+
+    def test_context_window_with_context_window_key(
+        self, coach_with_temp_dir: GeminiCoach, temp_gemini_dir: Path
+    ) -> None:
+        """Test no context window recommendation when context_window is set."""
+        settings = {"model": "gemini-pro", "context_window": 32000}
+        (temp_gemini_dir / "settings.json").write_text(json.dumps(settings))
+
+        recommendations = coach_with_temp_dir.get_recommendations()
+
+        # Should not have context window recommendation
+        context_recs = [r for r in recommendations if "context window" in r.title.lower()]
+        # With context_window set, no recommendation
+        assert len(context_recs) == 0 or all(
+            "context_window" not in str(r.description).lower() for r in context_recs
+        )
+
+    def test_export_report_oserror(self, coach_with_temp_dir: GeminiCoach, tmp_path: Path) -> None:
+        """Test export_report handles OSError."""
+        coach_with_temp_dir.analyze()
+        # Create a file where we expect a directory
+        bad_path = tmp_path / "badfile"
+        bad_path.write_text("block")
+        output_path = bad_path / "nested" / "report"
+
+        with pytest.raises(RuntimeError, match="Failed to export report"):
+            coach_with_temp_dir.export_report(output_path, format="json")
+
+    def test_export_report_no_report_after_analyze(self, tmp_path: Path) -> None:
+        """Test export_report when _last_report becomes None somehow."""
+        gemini_dir = tmp_path / ".gemini"
+        gemini_dir.mkdir()
+        coach = GeminiCoach(config_dir=gemini_dir)
+
+        # Manually set _last_report to None after calling analyze
+        coach.analyze()
+        coach._last_report = None
+
+        # Should still work because export_report calls analyze() again
+        output_path = tmp_path / "report"
+        result_path = coach.export_report(output_path, format="json")
+        assert result_path.exists()
+
+    def test_count_md_sections_oserror(
+        self, coach_with_temp_dir: GeminiCoach, temp_gemini_dir: Path
+    ) -> None:
+        """Test _count_md_sections handles OSError gracefully."""
+        # Use a path that doesn't exist
+        count = coach_with_temp_dir._count_md_sections(temp_gemini_dir / "nonexistent.md")
+        assert count == 0
+
+    def test_export_markdown_with_insights_and_recommendations(
+        self, coach_with_temp_dir: GeminiCoach, temp_gemini_dir: Path, tmp_path: Path
+    ) -> None:
+        """Test markdown export with both insights and recommendations."""
+        # Create GEMINI.md and MCP servers to generate insights
+        gemini_md = temp_gemini_dir / "GEMINI.md"
+        gemini_md.write_text("# Project\n\n## Section 1\n\n## Section 2\n" + "x" * 1000)
+
+        mcp_dir = temp_gemini_dir / "mcp_servers"
+        mcp_dir.mkdir()
+        (mcp_dir / "server1.json").write_text('{"name": "server1"}')
+
+        coach_with_temp_dir.analyze()
+        output_path = tmp_path / "report"
+
+        result_path = coach_with_temp_dir.export_report(output_path, format="markdown")
+
+        content = result_path.read_text()
+        # Verify insights section with actual data
+        assert "### GEMINI.md Configuration" in content or "GEMINI.md" in content
+        assert "### MCP Server Configuration" in content or "MCP" in content
+        # Verify recommendations section
+        assert "## Recommendations" in content

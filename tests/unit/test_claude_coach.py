@@ -499,3 +499,60 @@ class TestClaudeCoachEdgeCases:
         stats = coach.get_stats()
 
         assert stats["settings_exists"] is False
+
+    def test_export_report_oserror(self, coach_with_temp_dir: ClaudeCoach, tmp_path: Path) -> None:
+        """Test export_report handles OSError."""
+        coach_with_temp_dir.analyze()
+        # Create a file where we expect a directory
+        bad_path = tmp_path / "badfile"
+        bad_path.write_text("block")
+        output_path = bad_path / "nested" / "report"
+
+        with pytest.raises(RuntimeError, match="Failed to export report"):
+            coach_with_temp_dir.export_report(output_path, format="json")
+
+    def test_export_report_no_report_after_analyze(self, tmp_path: Path) -> None:
+        """Test export_report when _last_report becomes None somehow."""
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        coach = ClaudeCoach(config_dir=claude_dir)
+
+        # Manually set _last_report to None after calling analyze
+        coach.analyze()
+        coach._last_report = None
+
+        # Should still work because export_report calls analyze() again
+        output_path = tmp_path / "report"
+        result_path = coach.export_report(output_path, format="json")
+        assert result_path.exists()
+
+    def test_find_largest_file_empty_list(self, coach_with_temp_dir: ClaudeCoach) -> None:
+        """Test _find_largest_file with empty list."""
+        result = coach_with_temp_dir._find_largest_file([])
+        assert result is None
+
+    def test_export_markdown_with_insights_and_recommendations(
+        self, coach_with_temp_dir: ClaudeCoach, temp_claude_dir: Path, tmp_path: Path
+    ) -> None:
+        """Test markdown export with both insights and recommendations."""
+        # Create agents and skills to generate insights
+        agents_dir = temp_claude_dir / "agents"
+        agents_dir.mkdir()
+        (agents_dir / "agent1.md").write_text("# Agent 1\n" + "x" * 1000)
+        (agents_dir / "agent2.md").write_text("# Agent 2\n" + "x" * 2000)
+
+        skills_dir = temp_claude_dir / "skills"
+        skills_dir.mkdir()
+        (skills_dir / "skill1.md").write_text("# Skill 1\n" + "x" * 500)
+
+        coach_with_temp_dir.analyze()
+        output_path = tmp_path / "report"
+
+        result_path = coach_with_temp_dir.export_report(output_path, format="markdown")
+
+        content = result_path.read_text()
+        # Verify insights section with actual data
+        assert "### Agent Configuration" in content or "Agent" in content
+        assert "### Skill Configuration" in content or "Skill" in content
+        # Verify recommendations section
+        assert "## Recommendations" in content

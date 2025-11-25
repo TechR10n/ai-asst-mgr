@@ -531,3 +531,88 @@ class TestBackupEdgeCases:
 
         assert summary.successful == 1
         assert len(progress_messages) > 0
+
+    def test_list_backups_nonexistent_vendor_dir(self, backup_manager: BackupManager) -> None:
+        """Test list_backups handles nonexistent vendor directory gracefully."""
+        # Try to list backups for vendor that doesn't exist
+        backups = backup_manager.list_backups("nonexistent_vendor")
+        assert backups == []
+
+    def test_verify_backup_tar_error(self, backup_manager: BackupManager, tmp_path: Path) -> None:
+        """Test verify_backup handles TarError during archive read."""
+        corrupt_archive = tmp_path / "corrupt.tar.gz"
+        # Create a file that starts like a tar.gz but is corrupted
+        corrupt_archive.write_bytes(
+            b"\x1f\x8b\x08\x00\x00\x00\x00\x00" + b"corrupted tar data" * 100
+        )
+
+        is_valid, message = backup_manager.verify_backup(corrupt_archive)
+
+        assert is_valid is False
+        assert "error" in message.lower() or "invalid" in message.lower()
+
+    def test_count_files_tar_error(self, backup_manager: BackupManager, tmp_path: Path) -> None:
+        """Test _count_files_in_archive handles TarError gracefully."""
+        corrupt_archive = tmp_path / "corrupt.tar.gz"
+        corrupt_archive.write_bytes(b"not a tar file at all")
+
+        count = backup_manager._count_files_in_archive(corrupt_archive)
+        assert count == 0
+
+    def test_load_manifest_non_dict(self, backup_manager: BackupManager, tmp_path: Path) -> None:
+        """Test _load_manifest handles non-dict JSON gracefully."""
+        manifest_path = tmp_path / "manifest.json"
+        manifest_path.write_text("[]")  # JSON array instead of dict
+
+        result = backup_manager._load_manifest(manifest_path)
+        assert result == {"backups": []}
+
+    def test_get_stored_checksum_no_match(
+        self, backup_manager: BackupManager, mock_adapter: Mock, tmp_path: Path
+    ) -> None:
+        """Test _get_stored_checksum returns None when backup path doesn't match."""
+        # Create a backup
+        result = backup_manager.backup_vendor(mock_adapter)
+        assert result.success is True
+        assert result.metadata is not None
+
+        # Try to get checksum for a different path
+        different_path = tmp_path / "different_backup.tar.gz"
+        checksum = backup_manager._get_stored_checksum(different_path)
+        assert checksum is None
+
+    def test_get_stored_checksum_corrupt_manifest(
+        self, backup_manager: BackupManager, tmp_path: Path
+    ) -> None:
+        """Test _get_stored_checksum handles corrupt manifest gracefully."""
+        vendor_dir = backup_manager.backup_dir / "claude"
+        vendor_dir.mkdir(parents=True)
+
+        manifest_path = vendor_dir / "backup_manifest.json"
+        manifest_path.write_text("{invalid json")
+
+        backup_path = vendor_dir / "backup.tar.gz"
+        checksum = backup_manager._get_stored_checksum(backup_path)
+        assert checksum is None
+
+    def test_remove_from_manifest_nonexistent(
+        self, backup_manager: BackupManager, tmp_path: Path
+    ) -> None:
+        """Test _remove_from_manifest handles nonexistent manifest gracefully."""
+        backup_path = tmp_path / "nonexistent.tar.gz"
+        # Should not raise exception
+        backup_manager._remove_from_manifest("claude", backup_path)
+
+    def test_remove_from_manifest_corrupt(
+        self, backup_manager: BackupManager, tmp_path: Path
+    ) -> None:
+        """Test _remove_from_manifest handles corrupt manifest gracefully."""
+        vendor_dir = backup_manager.backup_dir / "claude"
+        vendor_dir.mkdir(parents=True)
+
+        manifest_path = vendor_dir / "backup_manifest.json"
+        manifest_path.write_text("{invalid json")
+
+        backup_path = vendor_dir / "backup.tar.gz"
+        # Should not raise exception
+        backup_manager._remove_from_manifest("claude", backup_path)

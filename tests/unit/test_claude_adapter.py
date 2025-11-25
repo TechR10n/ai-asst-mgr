@@ -2,7 +2,6 @@
 
 import json
 import shutil
-import subprocess
 import tarfile
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -198,32 +197,33 @@ def test_restore_file_not_found(adapter_with_temp_dir: ClaudeAdapter) -> None:
         adapter_with_temp_dir.restore(Path("/nonexistent/backup.tar.gz"))
 
 
-@patch("subprocess.run")
+@patch("ai_asst_mgr.adapters.claude.git_clone")
 def test_sync_from_git(
-    mock_run: Mock,
+    mock_git_clone: Mock,
     adapter_with_temp_dir: ClaudeAdapter,
 ) -> None:
     """Test sync_from_git clones and copies files."""
 
-    # Setup mock git clone
-    def create_temp_repo(*_args: object, **_kwargs: object) -> Mock:
+    # Setup mock git clone to create temp repo
+    def create_temp_repo(_url: str, _dest: object, _branch: str) -> bool:
+        # Create the temp directory with the expected structure
         temp_dir = adapter_with_temp_dir._config_dir.parent / "temp_git_clone"
         temp_dir.mkdir(exist_ok=True)
         (temp_dir / "agents").mkdir()
         (temp_dir / "agents" / "synced.md").write_text("# Synced")
         (temp_dir / "settings.json").write_text('{"synced": true}')
-        return Mock(returncode=0)
+        return True
 
-    mock_run.side_effect = create_temp_repo
+    mock_git_clone.side_effect = create_temp_repo
 
     adapter_with_temp_dir.sync_from_git("https://github.com/test/repo.git")
 
-    # Verify git was called
-    mock_run.assert_called_once()
-    call_args = mock_run.call_args[0][0]
-    assert call_args[0] == "git"
-    assert call_args[1] == "clone"
-    assert "https://github.com/test/repo.git" in call_args
+    # Verify git_clone was called with correct arguments
+    mock_git_clone.assert_called_once()
+    call_args = mock_git_clone.call_args
+    assert call_args[0][0] == "https://github.com/test/repo.git"  # URL
+    assert call_args[0][1] == adapter_with_temp_dir._config_dir.parent / "temp_git_clone"  # Dest
+    assert call_args[0][2] == "main"  # Branch
 
 
 def test_health_check_healthy(adapter_with_temp_dir: ClaudeAdapter) -> None:
@@ -355,15 +355,15 @@ def test_restore_error(adapter_with_temp_dir: ClaudeAdapter, tmp_path: Path) -> 
         adapter_with_temp_dir.restore(backup_file)
 
 
-@patch("subprocess.run")
+@patch("ai_asst_mgr.adapters.claude.git_clone")
 def test_sync_from_git_error(
-    mock_run: Mock,
+    mock_git_clone: Mock,
     adapter_with_temp_dir: ClaudeAdapter,
 ) -> None:
     """Test sync_from_git raises RuntimeError on git failure."""
-    mock_run.side_effect = subprocess.CalledProcessError(1, "git")
+    mock_git_clone.return_value = False
 
-    with pytest.raises(RuntimeError, match="Failed to sync from git"):
+    with pytest.raises(RuntimeError, match="Failed to clone repository"):
         adapter_with_temp_dir.sync_from_git("https://github.com/test/repo.git")
 
 
@@ -533,25 +533,25 @@ def test_restore_missing_extracted_dir(
 
 
 @patch("shutil.copytree")
+@patch("ai_asst_mgr.adapters.claude.git_clone")
 def test_sync_from_git_shutil_error(
+    mock_git_clone: Mock,
     mock_copytree: Mock,
     adapter_with_temp_dir: ClaudeAdapter,
 ) -> None:
     """Test sync_from_git handles shutil errors."""
-    # Create a mock that succeeds for git but fails for copytree
-    with patch("subprocess.run") as mock_run:
 
-        def create_temp_repo(*_args: object, **_kwargs: object) -> Mock:
-            temp_dir = adapter_with_temp_dir._config_dir.parent / "temp_git_clone"
-            temp_dir.mkdir(exist_ok=True)
-            (temp_dir / "agents").mkdir()
-            return Mock(returncode=0)
+    # Mock git_clone to succeed and create temp directory
+    def create_temp_repo(_url: str, dest: Path, _branch: str) -> bool:
+        dest.mkdir(exist_ok=True)
+        (dest / "agents").mkdir()
+        return True
 
-        mock_run.side_effect = create_temp_repo
-        mock_copytree.side_effect = shutil.Error("Copy failed")
+    mock_git_clone.side_effect = create_temp_repo
+    mock_copytree.side_effect = shutil.Error("Copy failed")
 
-        with pytest.raises(RuntimeError, match="Failed to sync from git"):
-            adapter_with_temp_dir.sync_from_git("https://github.com/test/repo.git")
+    with pytest.raises(RuntimeError, match="Failed to sync from git"):
+        adapter_with_temp_dir.sync_from_git("https://github.com/test/repo.git")
 
 
 def test_audit_config_with_agents_and_skills_dirs(

@@ -252,7 +252,7 @@ def config(
 
     # If value is provided, set the config
     if value is not None:
-        _config_set_value(vendors_to_use, key, value, vendor)
+        _config_set_value(vendors_to_use, key, value)
     else:
         # Get the config value
         _config_get_value(vendors_to_use, key, vendor)
@@ -1127,15 +1127,13 @@ def _config_set_value(
     vendors: dict[str, VendorAdapter],
     key: str,
     value: str,
-    vendor_name: str | None,  # noqa: ARG001
 ) -> None:
     """Set a configuration value.
 
     Args:
-        vendors: Dictionary of vendor name to adapter mappings.
+        vendors: Dictionary of vendor name to adapter mappings (pre-filtered by caller).
         key: Configuration key to set.
         value: Value to set.
-        vendor_name: Optional vendor name (if specified, only set for that vendor).
     """
     # Parse value - try to convert to appropriate type
     parsed_value = _parse_config_value(value)
@@ -1763,7 +1761,7 @@ def _backup_create(
 
 
 @app.command()
-def restore(  # noqa: PLR0913 - CLI commands often have many options
+def restore(
     backup_path: Annotated[
         Path | None,
         typer.Argument(help="Path to backup file to restore"),
@@ -2046,7 +2044,7 @@ def _restore_full(
 
 
 @app.command()
-def sync(  # noqa: PLR0913 - CLI commands often have many options
+def sync(  # noqa: PLR0913 - Typer CLI requires individual parameters for proper flag generation
     repo_url: Annotated[
         str,
         typer.Argument(help="Git repository URL to sync from"),
@@ -2116,9 +2114,6 @@ def sync(  # noqa: PLR0913 - CLI commands often have many options
         console.print(f"[yellow]Valid strategies: {valid_strategies}[/yellow]")
         raise typer.Exit(code=1) from None
 
-    def progress_callback(msg: str) -> None:
-        console.print(f"  {msg}")
-
     # Get vendors to sync
     if vendor:
         try:
@@ -2144,7 +2139,6 @@ def sync(  # noqa: PLR0913 - CLI commands often have many options
         branch,
         merge_strategy,
         not no_backup,
-        progress_callback,
     )
 
 
@@ -2210,14 +2204,13 @@ def _sync_preview(
     console.print("[dim]Use without --preview to perform the sync[/dim]")
 
 
-def _sync_execute(  # noqa: PLR0913 - Complex operation requires many params
+def _sync_execute(
     sync_manager: SyncManager,
     repo_url: str,
     vendors: dict[str, VendorAdapter],
     branch: str,
     strategy: MergeStrategy,
-    create_backup: bool,  # noqa: ARG001 - Reserved for future sync_vendor use
-    progress_callback: Callable[[str], None],
+    create_backup: bool,
 ) -> None:
     """Execute sync operation.
 
@@ -2227,8 +2220,7 @@ def _sync_execute(  # noqa: PLR0913 - Complex operation requires many params
         vendors: Dictionary of vendors to sync.
         branch: Git branch.
         strategy: Merge strategy.
-        create_backup: Whether to create pre-sync backup (reserved for future use).
-        progress_callback: Progress callback function.
+        create_backup: Whether to create pre-sync backup.
     """
     console.print(
         Panel.fit("[bold blue]Syncing from Git Repository[/bold blue]", border_style="blue")
@@ -2237,12 +2229,16 @@ def _sync_execute(  # noqa: PLR0913 - Complex operation requires many params
     console.print(f"[bold]Branch:[/bold] {branch}")
     console.print(f"[bold]Strategy:[/bold] {strategy.value}\n")
 
+    def progress_callback(msg: str) -> None:
+        console.print(f"  {msg}")
+
     results = sync_manager.sync_all_vendors(
         repo_url,
         vendors,
         branch,
         strategy,
         progress_callback,
+        create_backup=create_backup,
     )
 
     # Display results table

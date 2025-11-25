@@ -7,7 +7,6 @@ configurations, including settings, profiles, MCP servers, and backup operations
 from __future__ import annotations
 
 import shutil
-import subprocess  # nosec B404 - needed for git operations
 import tarfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -16,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 import toml
 
 from ai_asst_mgr.adapters.base import VendorAdapter, VendorInfo, VendorStatus
+from ai_asst_mgr.utils import git_clone, is_command_available, unpack_tar_securely
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -62,17 +62,7 @@ class OpenAIAdapter(VendorAdapter):
         Returns:
             True if the codex CLI executable is available, False otherwise.
         """
-        try:
-            result = subprocess.run(  # nosec B603 B607 - checking CLI availability
-                ["which", "codex"],
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-        except (subprocess.SubprocessError, OSError):
-            return False
-        else:
-            return result.returncode == 0
+        return is_command_available("codex")
 
     def is_configured(self) -> bool:
         """Check if OpenAI Codex has been configured.
@@ -290,13 +280,8 @@ Edit `config.toml` to add or modify profiles.
             temp_dir.mkdir(exist_ok=True)
 
             with tarfile.open(backup_path, "r:gz") as tar:
-                # Validate tar members to prevent path traversal attacks
-                safe_members = [
-                    member
-                    for member in tar.getmembers()
-                    if not (member.name.startswith("/") or ".." in member.name)
-                ]
-                tar.extractall(temp_dir, members=safe_members)  # nosec B202 - members validated
+                # Use secure unpacking to prevent path traversal attacks
+                unpack_tar_securely(tar, temp_dir)
 
             # Move extracted content to config directory
             extracted_dir = temp_dir / "codex"
@@ -333,13 +318,10 @@ Edit `config.toml` to add or modify profiles.
             if temp_dir.exists():
                 shutil.rmtree(temp_dir)
 
-            # Clone repository
-            subprocess.run(  # nosec B603 B607 - git command is intentional
-                ["git", "clone", "--branch", branch, "--depth", "1", repo_url, str(temp_dir)],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
+            # Clone repository using secure git_clone utility
+            if not git_clone(repo_url, temp_dir, branch):
+                msg = f"Failed to clone repository: {repo_url}"
+                raise RuntimeError(msg)
 
             # Copy relevant items to config
             sync_items = ["mcp_servers", "config.toml", "AGENTS.md"]
@@ -357,7 +339,7 @@ Edit `config.toml` to add or modify profiles.
             # Clean up temp directory
             shutil.rmtree(temp_dir)
 
-        except (subprocess.CalledProcessError, OSError, shutil.Error) as e:
+        except (OSError, shutil.Error) as e:
             error_msg = f"Failed to sync from git: {e}"
             raise RuntimeError(error_msg) from e
 
@@ -414,7 +396,7 @@ Edit `config.toml` to add or modify profiles.
             "errors": errors,
         }
 
-    def audit_config(self) -> dict[str, object]:  # noqa: PLR0912
+    def audit_config(self) -> dict[str, object]:
         """Audit OpenAI Codex configuration for security and best practices.
 
         Returns:
@@ -426,68 +408,13 @@ Edit `config.toml` to add or modify profiles.
         score = 100
 
         # Check directory permissions
-        if self._config_dir.exists():
-            mode = self._config_dir.stat().st_mode
-            if mode & 0o077:  # Check if group or others have permissions
-                issues.append("Config directory has overly permissive permissions")
-                score -= 20
+        score = self._audit_directory_permissions(issues, score)
 
         # Check config.toml exists and is valid
-        if not self._config_file.exists():
-            issues.append("No config.toml found")
-            score -= 30
-        else:
-            try:
-                config = self._load_config()
+        score = self._audit_config_file(issues, warnings, score)
 
-                # Check for API key at root level
-                has_root_key = "api_key" in config or "apiKey" in config
-                has_profile_key = False
-
-                # Check for API keys in profiles
-                if "profiles" in config and isinstance(config["profiles"], dict):
-                    for profile_name, profile in config["profiles"].items():
-                        if isinstance(profile, dict) and (
-                            "api_key" in profile or "apiKey" in profile
-                        ):
-                            has_profile_key = True
-                            api_key = profile.get("api_key") or profile.get("apiKey")
-                            is_long_key = (
-                                api_key
-                                and isinstance(api_key, str)
-                                and len(api_key) > _MIN_API_KEY_LENGTH
-                            )
-                            if is_long_key:
-                                msg = f"Profile '{profile_name}' has plaintext API key"
-                                warnings.append(msg)
-                                score -= 5
-
-                if not has_root_key and not has_profile_key:
-                    warnings.append("No API key configured")
-                    score -= 15
-                elif has_root_key:
-                    api_key = config.get("api_key") or config.get("apiKey")
-                    if not api_key or api_key == "":
-                        warnings.append("Root API key is empty")
-                        score -= 15
-                    elif isinstance(api_key, str) and len(api_key) > _MIN_API_KEY_LENGTH:
-                        msg = "API key stored in plaintext (consider using environment variables)"
-                        warnings.append(msg)
-                        score -= 10
-
-            except toml.TomlDecodeError:
-                issues.append("config.toml is malformed")
-                score -= 25
-
-        # Check for MCP servers directory
-        if self._config_dir.exists():
-            mcp_dir = self._config_dir / "mcp_servers"
-            if not mcp_dir.exists():
-                recommendations.append("Create mcp_servers/ directory for MCP server configs")
-
-        # Check for AGENTS.md
-        if self._config_dir.exists() and not self._agents_md.exists():
-            recommendations.append("Create AGENTS.md for agent documentation")
+        # Check for MCP servers directory and AGENTS.md
+        self._audit_optional_components(recommendations)
 
         return {
             "score": max(0, score),
@@ -495,6 +422,137 @@ Edit `config.toml` to add or modify profiles.
             "warnings": warnings,
             "recommendations": recommendations,
         }
+
+    def _audit_directory_permissions(self, issues: list[str], score: int) -> int:
+        """Audit config directory permissions.
+
+        Args:
+            issues: List to append issues to.
+            score: Current audit score.
+
+        Returns:
+            Updated audit score.
+        """
+        if self._config_dir.exists():
+            mode = self._config_dir.stat().st_mode
+            if mode & 0o077:  # Check if group or others have permissions
+                issues.append("Config directory has overly permissive permissions")
+                score -= 20
+        return score
+
+    def _audit_config_file(self, issues: list[str], warnings: list[str], score: int) -> int:
+        """Audit config.toml file existence and API key configuration.
+
+        Args:
+            issues: List to append issues to.
+            warnings: List to append warnings to.
+            score: Current audit score.
+
+        Returns:
+            Updated audit score.
+        """
+        if not self._config_file.exists():
+            issues.append("No config.toml found")
+            return score - 30
+
+        try:
+            config = self._load_config()
+            return self._audit_api_keys(config, warnings, score)
+        except toml.TomlDecodeError:
+            issues.append("config.toml is malformed")
+            return score - 25
+
+    def _audit_api_keys(self, config: dict[str, Any], warnings: list[str], score: int) -> int:
+        """Audit API key configuration in config.toml.
+
+        Args:
+            config: Loaded configuration dictionary.
+            warnings: List to append warnings to.
+            score: Current audit score.
+
+        Returns:
+            Updated audit score.
+        """
+        has_root_key = "api_key" in config or "apiKey" in config
+        has_profile_key, score = self._audit_profile_keys(config, warnings, score)
+
+        if not has_root_key and not has_profile_key:
+            warnings.append("No API key configured")
+            return score - 15
+
+        if has_root_key:
+            return self._audit_root_key(config, warnings, score)
+
+        return score
+
+    def _audit_profile_keys(
+        self, config: dict[str, Any], warnings: list[str], score: int
+    ) -> tuple[bool, int]:
+        """Audit API keys in profiles.
+
+        Args:
+            config: Loaded configuration dictionary.
+            warnings: List to append warnings to.
+            score: Current audit score.
+
+        Returns:
+            Tuple of (has_profile_key, updated_score).
+        """
+        has_profile_key = False
+
+        if "profiles" in config and isinstance(config["profiles"], dict):
+            for profile_name, profile in config["profiles"].items():
+                if isinstance(profile, dict) and ("api_key" in profile or "apiKey" in profile):
+                    has_profile_key = True
+                    api_key = profile.get("api_key") or profile.get("apiKey")
+                    is_long_key = (
+                        api_key and isinstance(api_key, str) and len(api_key) > _MIN_API_KEY_LENGTH
+                    )
+                    if is_long_key:
+                        msg = f"Profile '{profile_name}' has plaintext API key"
+                        warnings.append(msg)
+                        score -= 5
+
+        return has_profile_key, score
+
+    def _audit_root_key(self, config: dict[str, Any], warnings: list[str], score: int) -> int:
+        """Audit root-level API key.
+
+        Args:
+            config: Loaded configuration dictionary.
+            warnings: List to append warnings to.
+            score: Current audit score.
+
+        Returns:
+            Updated audit score.
+        """
+        api_key = config.get("api_key") or config.get("apiKey")
+        if not api_key or api_key == "":
+            warnings.append("Root API key is empty")
+            return score - 15
+
+        if isinstance(api_key, str) and len(api_key) > _MIN_API_KEY_LENGTH:
+            msg = "API key stored in plaintext (consider using environment variables)"
+            warnings.append(msg)
+            return score - 10
+
+        return score
+
+    def _audit_optional_components(self, recommendations: list[str]) -> None:
+        """Audit optional components like MCP servers and AGENTS.md.
+
+        Args:
+            recommendations: List to append recommendations to.
+        """
+        if not self._config_dir.exists():
+            return
+
+        mcp_dir = self._config_dir / "mcp_servers"
+        if not mcp_dir.exists():
+            recommendations.append("Create mcp_servers/ directory for MCP server configs")
+
+        if not self._agents_md.exists():
+            recommendations.append("Create AGENTS.md for agent documentation")
 
     def get_usage_stats(self) -> dict[str, object]:
         """Get usage statistics for OpenAI Codex.

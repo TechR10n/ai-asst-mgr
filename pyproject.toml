@@ -30,6 +30,7 @@ dependencies = [
     "httpx>=0.26.0",
     "toml>=0.10.2",
     "click>=8.1.7",
+    "gitpython>=3.1.45",
 ]
 
 [project.optional-dependencies]
@@ -102,6 +103,9 @@ ignore = [
     "D213",    # Multi-line docstring summary should start at the second line (conflicts with D212)
 ]
 
+[tool.ruff.lint.pylint]
+max-args = 6  # Orchestration functions and CLI commands need 6 params
+
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = [
     "D100",    # Missing docstring in public module
@@ -110,9 +114,15 @@ ignore = [
     "PLR2004", # Magic value used in comparison
     "TC003",   # Move standard library import into type-checking block (Path used at runtime in fixtures)
     "ARG002",  # Unused method argument (fixtures often need parameters for dependency chain)
+    "PLC0415", # Local imports for test isolation and lazy loading of test helpers
+    "PT017",   # Assertion on exception in except - valid for testing exit codes
+    "RUF059",  # Unpacked variable unused - tests verify specific return values
 ]
-"tests/unit/test_imports.py" = [
-    "PLC0415", # Import should be at top-level (intentional for import tests)
+"src/ai_asst_mgr/operations/sync.py" = [
+    "TC003",   # Path used at runtime in dataclass fields and function bodies
+]
+"src/ai_asst_mgr/utils/tarfile_safe.py" = [
+    "TC003",   # tarfile and Path used at runtime in extraction operations
 ]
 
 [tool.ruff.lint.pydocstyle]

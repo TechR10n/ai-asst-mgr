@@ -1,7 +1,6 @@
 """Unit tests for OpenAIAdapter."""
 
 import shutil
-import subprocess
 import tarfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -58,28 +57,28 @@ def test_openai_adapter_info() -> None:
     assert info.config_dir == Path.home() / ".codex"
 
 
-@patch("subprocess.run")
-def test_is_installed_true(mock_run: MagicMock) -> None:
+@patch("shutil.which")
+def test_is_installed_true(mock_which: MagicMock) -> None:
     """Test is_installed returns True when CLI exists."""
-    mock_run.return_value = MagicMock(returncode=0)
+    mock_which.return_value = "/usr/bin/codex"
 
     adapter = OpenAIAdapter()
     assert adapter.is_installed() is True
 
 
-@patch("subprocess.run")
-def test_is_installed_false(mock_run: MagicMock) -> None:
+@patch("shutil.which")
+def test_is_installed_false(mock_which: MagicMock) -> None:
     """Test is_installed returns False when CLI doesn't exist."""
-    mock_run.return_value = MagicMock(returncode=1)
+    mock_which.return_value = None
 
     adapter = OpenAIAdapter()
     assert adapter.is_installed() is False
 
 
-@patch("subprocess.run")
-def test_is_installed_subprocess_error(mock_run: MagicMock) -> None:
-    """Test is_installed handles subprocess errors."""
-    mock_run.side_effect = OSError("Command not found")
+@patch("shutil.which")
+def test_is_installed_subprocess_error(mock_which: MagicMock) -> None:
+    """Test is_installed handles errors gracefully."""
+    mock_which.return_value = None
 
     adapter = OpenAIAdapter()
     assert adapter.is_installed() is False
@@ -132,31 +131,31 @@ def test_is_configured_malformed_toml(adapter_with_temp_dir: OpenAIAdapter) -> N
     assert adapter_with_temp_dir.is_configured() is False
 
 
-@patch("subprocess.run")
+@patch("shutil.which")
 def test_get_status_not_installed(
-    mock_run: MagicMock, adapter_with_temp_dir: OpenAIAdapter
+    mock_which: MagicMock, adapter_with_temp_dir: OpenAIAdapter
 ) -> None:
     """Test get_status returns NOT_INSTALLED when CLI not available."""
-    mock_run.return_value = MagicMock(returncode=1)
+    mock_which.return_value = None
 
     status = adapter_with_temp_dir.get_status()
     assert status == VendorStatus.NOT_INSTALLED
 
 
-@patch("subprocess.run")
-def test_get_status_installed(mock_run: MagicMock, adapter_with_temp_dir: OpenAIAdapter) -> None:
+@patch("shutil.which")
+def test_get_status_installed(mock_which: MagicMock, adapter_with_temp_dir: OpenAIAdapter) -> None:
     """Test get_status returns INSTALLED when config dir doesn't exist."""
-    mock_run.return_value = MagicMock(returncode=0)
+    mock_which.return_value = "/usr/bin/codex"
     adapter_with_temp_dir._config_dir.rmdir()
 
     status = adapter_with_temp_dir.get_status()
     assert status == VendorStatus.INSTALLED
 
 
-@patch("subprocess.run")
-def test_get_status_configured(mock_run: MagicMock, adapter_with_temp_dir: OpenAIAdapter) -> None:
+@patch("shutil.which")
+def test_get_status_configured(mock_which: MagicMock, adapter_with_temp_dir: OpenAIAdapter) -> None:
     """Test get_status returns CONFIGURED when properly set up."""
-    mock_run.return_value = MagicMock(returncode=0)
+    mock_which.return_value = "/usr/bin/codex"
     config = {"api_key": "test-key", "model": "gpt-4"}
     adapter_with_temp_dir._save_config(config)
 
@@ -164,15 +163,15 @@ def test_get_status_configured(mock_run: MagicMock, adapter_with_temp_dir: OpenA
     assert status == VendorStatus.CONFIGURED
 
 
-@patch("subprocess.run")
-def test_get_status_error(mock_run: MagicMock, adapter_with_temp_dir: OpenAIAdapter) -> None:
+@patch("shutil.which")
+def test_get_status_error(mock_which: MagicMock, adapter_with_temp_dir: OpenAIAdapter) -> None:
     """Test get_status returns INSTALLED when config is malformed.
 
     Note: Malformed TOML is caught by is_configured() which returns False,
     so the status is INSTALLED rather than ERROR. This is by design - the
     system is installed but not properly configured.
     """
-    mock_run.return_value = MagicMock(returncode=0)
+    mock_which.return_value = "/usr/bin/codex"
     adapter_with_temp_dir._config_file.write_text("[invalid toml")
 
     status = adapter_with_temp_dir.get_status()
@@ -292,21 +291,20 @@ def test_restore_file_not_found(adapter_with_temp_dir: OpenAIAdapter, tmp_path: 
         adapter_with_temp_dir.restore(nonexistent_backup)
 
 
-@patch("subprocess.run")
-def test_sync_from_git(mock_run: MagicMock, adapter_with_temp_dir: OpenAIAdapter) -> None:
+@patch("ai_asst_mgr.adapters.openai.git_clone")
+def test_sync_from_git(mock_git_clone: MagicMock, adapter_with_temp_dir: OpenAIAdapter) -> None:
     """Test sync_from_git clones and copies configuration."""
 
     # Create fake git repo directory at the expected location
-    def create_fake_repo(*_args: object, **_kwargs: object) -> MagicMock:
-        fake_repo = adapter_with_temp_dir._config_dir.parent / "temp_git_clone"
-        fake_repo.mkdir(parents=True, exist_ok=True)
-        (fake_repo / "config.toml").write_text('[api]\nkey = "git-key"')
-        (fake_repo / "AGENTS.md").write_text("# Agents")
-        (fake_repo / "mcp_servers").mkdir()
-        (fake_repo / "mcp_servers" / "server1.toml").write_text('[server]\nname = "s1"')
-        return MagicMock(returncode=0)
+    def create_fake_repo(_url: str, dest: Path, _branch: str) -> bool:
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / "config.toml").write_text('[api]\nkey = "git-key"')
+        (dest / "AGENTS.md").write_text("# Agents")
+        (dest / "mcp_servers").mkdir()
+        (dest / "mcp_servers" / "server1.toml").write_text('[server]\nname = "s1"')
+        return True
 
-    mock_run.side_effect = create_fake_repo
+    mock_git_clone.side_effect = create_fake_repo
 
     adapter_with_temp_dir.sync_from_git("https://github.com/test/repo.git")
 
@@ -318,8 +316,8 @@ def test_sync_from_git(mock_run: MagicMock, adapter_with_temp_dir: OpenAIAdapter
 
 def test_health_check_healthy(adapter_with_temp_dir: OpenAIAdapter) -> None:
     """Test health_check returns healthy status."""
-    with patch("subprocess.run") as mock_run:
-        mock_run.return_value = MagicMock(returncode=0)
+    with patch("shutil.which") as mock_which:
+        mock_which.return_value = "/usr/bin/codex"
 
         adapter_with_temp_dir._save_config({"api_key": "test-key"})
         (adapter_with_temp_dir._config_dir / "mcp_servers").mkdir()
@@ -336,8 +334,8 @@ def test_health_check_healthy(adapter_with_temp_dir: OpenAIAdapter) -> None:
 
 def test_health_check_not_installed(adapter_with_temp_dir: OpenAIAdapter) -> None:
     """Test health_check detects missing CLI."""
-    with patch("subprocess.run") as mock_run:
-        mock_run.return_value = MagicMock(returncode=1)
+    with patch("shutil.which") as mock_which:
+        mock_which.return_value = None
 
         result = adapter_with_temp_dir.health_check()
 
@@ -448,8 +446,8 @@ def test_audit_config_missing_directories_recommendations(
 
 def test_get_usage_stats(adapter_with_temp_dir: OpenAIAdapter) -> None:
     """Test get_usage_stats returns statistics."""
-    with patch("subprocess.run") as mock_run:
-        mock_run.return_value = MagicMock(returncode=0)
+    with patch("shutil.which") as mock_which:
+        mock_which.return_value = "/usr/bin/codex"
 
         config = {
             "api_key": "test",
@@ -471,8 +469,8 @@ def test_get_usage_stats(adapter_with_temp_dir: OpenAIAdapter) -> None:
 
 def test_get_usage_stats_not_installed(adapter_with_temp_dir: OpenAIAdapter) -> None:
     """Test get_usage_stats when CLI not installed."""
-    with patch("subprocess.run") as mock_run:
-        mock_run.return_value = MagicMock(returncode=1)
+    with patch("shutil.which") as mock_which:
+        mock_which.return_value = None
 
         stats = adapter_with_temp_dir.get_usage_stats()
 
@@ -512,8 +510,8 @@ def test_list_toml_files_nonexistent_directory(
 
 def test_health_check_malformed_config(adapter_with_temp_dir: OpenAIAdapter) -> None:
     """Test health_check detects malformed config."""
-    with patch("subprocess.run") as mock_run:
-        mock_run.return_value = MagicMock(returncode=0)
+    with patch("shutil.which") as mock_which:
+        mock_which.return_value = "/usr/bin/codex"
 
         adapter_with_temp_dir._config_file.write_text("[invalid")
 
@@ -525,8 +523,8 @@ def test_health_check_malformed_config(adapter_with_temp_dir: OpenAIAdapter) -> 
 
 def test_health_check_missing_mcp_dir(adapter_with_temp_dir: OpenAIAdapter) -> None:
     """Test health_check detects missing MCP directory."""
-    with patch("subprocess.run") as mock_run:
-        mock_run.return_value = MagicMock(returncode=0)
+    with patch("shutil.which") as mock_which:
+        mock_which.return_value = "/usr/bin/codex"
 
         adapter_with_temp_dir._save_config({"api_key": "test"})
 
@@ -551,40 +549,51 @@ def test_backup_error(adapter_with_temp_dir: OpenAIAdapter, tmp_path: Path) -> N
 
 def test_restore_error(adapter_with_temp_dir: OpenAIAdapter, tmp_path: Path) -> None:
     """Test restore handles extraction errors."""
-    # Create a valid tar file
+    # Create a tar file with a test file
     backup_file = tmp_path / "test.tar.gz"
-    with tarfile.open(backup_file, "w:gz"):
-        pass
+    test_content = tmp_path / "test_content"
+    test_content.mkdir()
+    (test_content / "test.txt").write_text("test")
 
-    with patch.object(tarfile.TarFile, "extractall", side_effect=OSError("Extract error")):  # noqa: SIM117
+    with tarfile.open(backup_file, "w:gz") as tar:
+        tar.add(test_content, arcname="codex")
+
+    with patch.object(tarfile.TarFile, "extract", side_effect=OSError("Extract error")):  # noqa: SIM117
         with pytest.raises(RuntimeError, match="Failed to restore backup"):
             adapter_with_temp_dir.restore(backup_file)
 
 
-@patch("subprocess.run")
-def test_sync_from_git_error(mock_run: MagicMock, adapter_with_temp_dir: OpenAIAdapter) -> None:
+@patch("ai_asst_mgr.adapters.openai.git_clone")
+def test_sync_from_git_error(
+    mock_git_clone: MagicMock, adapter_with_temp_dir: OpenAIAdapter
+) -> None:
     """Test sync_from_git handles git clone errors."""
-    mock_run.side_effect = subprocess.CalledProcessError(1, "git")
+    mock_git_clone.return_value = False
 
-    with pytest.raises(RuntimeError, match="Failed to sync from git"):
+    with pytest.raises(RuntimeError, match="Failed to clone repository"):
         adapter_with_temp_dir.sync_from_git("https://github.com/test/repo.git")
 
 
-@patch("subprocess.run")
+@patch("shutil.copy")
+@patch("ai_asst_mgr.adapters.openai.git_clone")
 def test_sync_from_git_shutil_error(
-    mock_run: MagicMock, adapter_with_temp_dir: OpenAIAdapter, tmp_path: Path
+    mock_git_clone: MagicMock,
+    mock_copy: MagicMock,
+    adapter_with_temp_dir: OpenAIAdapter,
 ) -> None:
     """Test sync_from_git handles shutil errors."""
-    # Create fake git repo
-    fake_repo = tmp_path / "temp_git_clone"
-    fake_repo.mkdir()
-    (fake_repo / "config.toml").write_text('[api]\nkey = "test"')
 
-    mock_run.return_value = MagicMock(returncode=0)
+    # Mock git_clone to succeed and create temp directory
+    def create_fake_repo(_url: str, dest: Path, _branch: str) -> bool:
+        dest.mkdir(exist_ok=True)
+        (dest / "config.toml").write_text('[api]\nkey = "test"')
+        return True
 
-    with patch.object(shutil, "copy", side_effect=OSError("Copy error")):  # noqa: SIM117
-        with pytest.raises(RuntimeError, match="Failed to sync from git"):
-            adapter_with_temp_dir.sync_from_git("https://github.com/test/repo.git")
+    mock_git_clone.side_effect = create_fake_repo
+    mock_copy.side_effect = OSError("Copy error")
+
+    with pytest.raises(RuntimeError, match="Failed to sync from git"):
+        adapter_with_temp_dir.sync_from_git("https://github.com/test/repo.git")
 
 
 def test_audit_config_with_mcp_and_agents_md(
@@ -628,8 +637,8 @@ def test_restore_missing_extracted_dir(
 
 def test_health_check_no_api_key(adapter_with_temp_dir: OpenAIAdapter) -> None:
     """Test health_check detects missing API key."""
-    with patch("subprocess.run") as mock_run:
-        mock_run.return_value = MagicMock(returncode=0)
+    with patch("shutil.which") as mock_which:
+        mock_which.return_value = "/usr/bin/codex"
 
         adapter_with_temp_dir._save_config({"model": "gpt-4"})
 
@@ -643,8 +652,8 @@ def test_get_usage_stats_malformed_config(
     adapter_with_temp_dir: OpenAIAdapter,
 ) -> None:
     """Test get_usage_stats handles malformed config gracefully."""
-    with patch("subprocess.run") as mock_run:
-        mock_run.return_value = MagicMock(returncode=0)
+    with patch("shutil.which") as mock_which:
+        mock_which.return_value = "/usr/bin/codex"
 
         adapter_with_temp_dir._config_file.write_text("[invalid")
 
