@@ -14,6 +14,8 @@ from fastapi.responses import HTMLResponse
 from ai_asst_mgr.web.services import (
     get_agents_data,
     get_dashboard_data,
+    get_github_commits_data,
+    get_github_summary,
     get_sessions_data,
     get_weekly_review_data,
 )
@@ -49,10 +51,11 @@ async def dashboard(request: Request) -> HTMLResponse:
     """
     templates = _get_templates(request)
     data = get_dashboard_data()
+    github_data = get_github_summary()
     return templates.TemplateResponse(
         request=request,
         name="dashboard.html",
-        context={"data": data},
+        context={"data": data, "github": github_data},
     )
 
 
@@ -113,5 +116,30 @@ async def sessions(
     return templates.TemplateResponse(
         request=request,
         name="sessions.html",
+        context={"data": data},
+    )
+
+
+@router.get("/github", response_class=HTMLResponse)
+async def github_page(
+    request: Request,
+    vendor: str | None = None,
+    repo: str | None = None,
+) -> HTMLResponse:
+    """Render the GitHub activity page.
+
+    Args:
+        request: The incoming request.
+        vendor: Optional vendor filter (claude, gemini, openai, none).
+        repo: Optional repository filter.
+
+    Returns:
+        Rendered HTML GitHub page.
+    """
+    templates = _get_templates(request)
+    data = get_github_commits_data(vendor_id=vendor, repo=repo)
+    return templates.TemplateResponse(
+        request=request,
+        name="github.html",
         context={"data": data},
     )

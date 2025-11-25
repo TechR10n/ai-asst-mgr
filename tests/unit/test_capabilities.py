@@ -388,6 +388,75 @@ class TestUniversalAgentManagerFileOperations:
             assert agent.name == "binary-agent"
             # Content may be empty or partial depending on encoding handling
 
+    def test_create_agent_from_file_with_empty_lines_before_heading(self) -> None:
+        """Test _create_agent_from_file skips empty lines to find heading."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            test_file = temp_path / "agent.md"
+            test_file.write_text("\n\n# Heading After Empty Lines\n\nContent")
+
+            manager = UniversalAgentManager({})
+            agent = manager._create_agent_from_file(test_file, "claude", AgentType.AGENT)
+
+            assert agent.description == "Heading After Empty Lines"
+
+    def test_create_agent_from_file_with_empty_lines_before_text(self) -> None:
+        """Test _create_agent_from_file skips empty lines to find first text."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            test_file = temp_path / "agent.md"
+            test_file.write_text("\n\n\nFirst line after empties\n\nContent")
+
+            manager = UniversalAgentManager({})
+            agent = manager._create_agent_from_file(test_file, "claude", AgentType.AGENT)
+
+            assert "First line after empties" in agent.description
+
+    def test_create_agent_from_file_with_heading_and_text(self) -> None:
+        """Test _create_agent_from_file finds heading before other text."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            test_file = temp_path / "agent.md"
+            # Empty lines, then a heading, then text - heading should be used
+            test_file.write_text("\n\n# My Heading\nSome other text\nMore content")
+
+            manager = UniversalAgentManager({})
+            agent = manager._create_agent_from_file(test_file, "claude", AgentType.AGENT)
+
+            assert agent.description == "My Heading"
+
+    def test_create_agent_from_file_only_comments_and_empty_lines(self) -> None:
+        """Test _create_agent_from_file with only comments/empty lines (no description)."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            test_file = temp_path / "agent.md"
+            # Only lines starting with # (but not "# " pattern) and empty lines
+            test_file.write_text("\n\n##\n###\n\n")
+
+            manager = UniversalAgentManager({})
+            agent = manager._create_agent_from_file(test_file, "claude", AgentType.AGENT)
+
+            # Description should be empty since no valid content found
+            assert agent.description == ""
+
+    def test_create_agent_from_file_read_error(self) -> None:
+        """Test _create_agent_from_file handles file read errors."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            test_file = temp_path / "agent.md"
+            test_file.write_text("Test content")
+
+            manager = UniversalAgentManager({})
+
+            # Mock read_text to raise OSError
+            with patch.object(Path, "read_text", side_effect=OSError("Read failed")):
+                agent = manager._create_agent_from_file(test_file, "claude", AgentType.AGENT)
+
+            # Should return agent with empty content and description
+            assert agent.name == "agent"
+            assert agent.content == ""
+            assert agent.description == ""
+
 
 class TestUniversalAgentManagerCreate:
     """Tests for agent creation."""
@@ -500,6 +569,65 @@ class TestUniversalAgentManagerCreate:
 
             assert result.success is True
             assert (config_dir / "mcp_servers" / "test-mcp.json").exists()
+
+    def test_create_agent_no_config_dir(self) -> None:
+        """Test creating agent when vendor config dir not found."""
+        manager = UniversalAgentManager({"claude": MagicMock()})
+
+        with patch.object(manager, "_get_vendor_config_dir", return_value=None):
+            result = manager.create_agent(
+                name="test",
+                vendor_id="claude",
+                agent_type=AgentType.AGENT,
+                content="Test content",
+            )
+
+        assert result.success is False
+        assert "Could not find config directory" in (result.error or "")
+
+    def test_create_agent_unsupported_type(self) -> None:
+        """Test creating agent with unsupported type for vendor."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            config_dir = temp_path / ".gemini"
+            config_dir.mkdir()
+
+            manager = UniversalAgentManager({"gemini": MagicMock()})
+
+            with patch.object(manager, "_get_vendor_config_dir", return_value=config_dir):
+                # Gemini doesn't support AGENT type
+                result = manager.create_agent(
+                    name="test",
+                    vendor_id="gemini",
+                    agent_type=AgentType.AGENT,
+                    content="Test content",
+                )
+
+            assert result.success is False
+            assert "not supported" in (result.error or "")
+
+    def test_create_agent_write_error(self) -> None:
+        """Test creating agent handles write errors."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            config_dir = temp_path / ".claude"
+            config_dir.mkdir()
+
+            manager = UniversalAgentManager({"claude": MagicMock()})
+
+            with (
+                patch.object(manager, "_get_vendor_config_dir", return_value=config_dir),
+                patch("pathlib.Path.write_text", side_effect=OSError("Write failed")),
+            ):
+                result = manager.create_agent(
+                    name="test",
+                    vendor_id="claude",
+                    agent_type=AgentType.AGENT,
+                    content="Test content",
+                )
+
+            assert result.success is False
+            assert result.error == "Write failed"
 
 
 class TestUniversalAgentManagerSync:
@@ -683,6 +811,95 @@ class TestUniversalAgentManagerSync:
 
         assert len(messages) > 0
 
+    def test_sync_agent_create_failure(self) -> None:
+        """Test sync agent handles create_agent failure."""
+        agent = Agent(
+            name="test-agent",
+            vendor_id="claude",
+            agent_type=AgentType.AGENT,
+            content="Test",
+        )
+
+        manager = UniversalAgentManager({"claude": MagicMock(), "openai": MagicMock()})
+
+        with (
+            patch.object(
+                manager,
+                "list_all_agents",
+                return_value=AgentListResult(
+                    agents=[agent],
+                    total_count=1,
+                    by_vendor={"claude": 1},
+                    by_type={},
+                ),
+            ),
+            patch.object(manager, "_get_compatible_type", return_value=AgentType.AGENT),
+            patch.object(
+                manager,
+                "create_agent",
+                return_value=AgentCreateResult(success=False, error="Creation failed"),
+            ),
+        ):
+            result = manager.sync_agent(
+                agent_name="test-agent",
+                source_vendor="claude",
+                target_vendors=["openai"],
+            )
+
+        assert result.synced_count == 0
+        assert len(result.errors) > 0
+        assert "openai: Creation failed" in result.errors
+
+    def test_sync_agent_with_multiple_agents_finds_correct_one(self) -> None:
+        """Test sync agent finds correct agent when multiple exist."""
+        agent1 = Agent(
+            name="agent-one",
+            vendor_id="claude",
+            agent_type=AgentType.AGENT,
+            content="Test 1",
+        )
+        agent2 = Agent(
+            name="agent-two",
+            vendor_id="claude",
+            agent_type=AgentType.AGENT,
+            content="Test 2",
+        )
+        agent3 = Agent(
+            name="target-agent",
+            vendor_id="claude",
+            agent_type=AgentType.AGENT,
+            content="Target content",
+        )
+
+        manager = UniversalAgentManager({"claude": MagicMock(), "openai": MagicMock()})
+
+        with (
+            patch.object(
+                manager,
+                "list_all_agents",
+                return_value=AgentListResult(
+                    agents=[agent1, agent2, agent3],
+                    total_count=3,
+                    by_vendor={"claude": 3},
+                    by_type={},
+                ),
+            ),
+            patch.object(manager, "_get_compatible_type", return_value=AgentType.AGENT),
+            patch.object(
+                manager,
+                "create_agent",
+                return_value=AgentCreateResult(success=True, agent=agent3),
+            ),
+        ):
+            result = manager.sync_agent(
+                agent_name="target-agent",
+                source_vendor="claude",
+                target_vendors=["openai"],
+            )
+
+        # Should have found and synced the target-agent
+        assert result.synced_count == 1
+
 
 class TestUniversalAgentManagerGetDelete:
     """Tests for get and delete operations."""
@@ -714,6 +931,25 @@ class TestUniversalAgentManagerGetDelete:
             result = manager.get_agent("nonexistent", "claude")
 
         assert result is None
+
+    def test_get_agent_with_multiple_agents(self) -> None:
+        """Test getting agent when multiple exist."""
+        agent1 = Agent(name="agent-one", vendor_id="claude", agent_type=AgentType.AGENT)
+        agent2 = Agent(name="agent-two", vendor_id="claude", agent_type=AgentType.AGENT)
+        agent3 = Agent(name="target", vendor_id="claude", agent_type=AgentType.AGENT)
+        manager = UniversalAgentManager({"claude": MagicMock()})
+
+        with patch.object(
+            manager,
+            "list_all_agents",
+            return_value=AgentListResult(
+                agents=[agent1, agent2, agent3], total_count=3, by_vendor={}, by_type={}
+            ),
+        ):
+            result = manager.get_agent("target", "claude")
+
+        assert result is not None
+        assert result.name == "target"
 
     def test_delete_agent_success(self) -> None:
         """Test successful agent deletion."""
@@ -786,6 +1022,28 @@ class TestUniversalAgentManagerGetDelete:
 
             assert len(messages) > 0
             assert "Deleting" in messages[0]
+
+    def test_delete_agent_oserror(self) -> None:
+        """Test delete agent handles OSError."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            agent_file = temp_path / "test-agent.md"
+            # File doesn't exist, so unlink will fail
+
+            agent = Agent(
+                name="test-agent",
+                vendor_id="claude",
+                agent_type=AgentType.AGENT,
+                file_path=agent_file,
+            )
+
+            manager = UniversalAgentManager({"claude": MagicMock()})
+
+            with patch.object(manager, "get_agent", return_value=agent):
+                success, message = manager.delete_agent("test-agent", "claude")
+
+            assert success is False
+            assert message  # Should contain error message
 
 
 class TestCompatibleTypes:
@@ -1012,6 +1270,48 @@ class TestVendorConfigDirectories:
         result = manager._get_agent_directory(config_dir, "gemini", AgentType.AGENT)
         assert result is None
 
+    def test_get_agent_directory_openai_agent(self, manager: UniversalAgentManager) -> None:
+        """Test getting OpenAI agent directory (root for AGENTS.md)."""
+        config_dir = Path("/test")
+        result = manager._get_agent_directory(config_dir, "openai", AgentType.AGENT)
+        assert result == config_dir
+
+    def test_get_agent_directory_openai_mcp(self, manager: UniversalAgentManager) -> None:
+        """Test getting OpenAI MCP server directory."""
+        config_dir = Path("/test")
+        result = manager._get_agent_directory(config_dir, "openai", AgentType.MCP_SERVER)
+        assert result == config_dir / "mcp_servers"
+
+    def test_get_agent_directory_claude_unsupported(self, manager: UniversalAgentManager) -> None:
+        """Test Claude with unsupported type returns None."""
+        config_dir = Path("/test")
+        result = manager._get_agent_directory(config_dir, "claude", AgentType.MCP_SERVER)
+        assert result is None
+
+    def test_get_agent_directory_gemini_agent_unsupported(
+        self, manager: UniversalAgentManager
+    ) -> None:
+        """Test Gemini with AGENT type returns None (not supported)."""
+        config_dir = Path("/test")
+        result = manager._get_agent_directory(config_dir, "gemini", AgentType.AGENT)
+        assert result is None
+
+    def test_get_agent_directory_gemini_skill_unsupported(
+        self, manager: UniversalAgentManager
+    ) -> None:
+        """Test Gemini with SKILL type returns None (not supported)."""
+        config_dir = Path("/test")
+        result = manager._get_agent_directory(config_dir, "gemini", AgentType.SKILL)
+        assert result is None
+
+    def test_get_agent_directory_openai_skill_unsupported(
+        self, manager: UniversalAgentManager
+    ) -> None:
+        """Test OpenAI with SKILL type returns None (not supported)."""
+        config_dir = Path("/test")
+        result = manager._get_agent_directory(config_dir, "openai", AgentType.SKILL)
+        assert result is None
+
 
 class TestVendorAgentExtraction:
     """Tests for vendor-specific agent extraction methods."""
@@ -1098,6 +1398,42 @@ class TestVendorAgentExtraction:
             assert AgentType.AGENT in types
             assert AgentType.SKILL in types
 
+    def test_get_claude_agents_no_agents_dir(self) -> None:
+        """Test _get_claude_agents when agents directory doesn't exist."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            skills_dir = temp_path / "skills"
+            skills_dir.mkdir()
+            (skills_dir / "skill1.md").write_text("# Skill 1")
+
+            mock_adapter = MagicMock()
+            mock_adapter.info.config_dir = temp_path
+
+            manager = UniversalAgentManager({"claude": mock_adapter})
+            agents = manager._get_claude_agents(mock_adapter)
+
+            # Should only find skill, no agents
+            assert len(agents) == 1
+            assert agents[0].agent_type == AgentType.SKILL
+
+    def test_get_claude_agents_no_skills_dir(self) -> None:
+        """Test _get_claude_agents when skills directory doesn't exist."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            agents_dir = temp_path / "agents"
+            agents_dir.mkdir()
+            (agents_dir / "agent1.md").write_text("# Agent 1")
+
+            mock_adapter = MagicMock()
+            mock_adapter.info.config_dir = temp_path
+
+            manager = UniversalAgentManager({"claude": mock_adapter})
+            agents = manager._get_claude_agents(mock_adapter)
+
+            # Should only find agent, no skills
+            assert len(agents) == 1
+            assert agents[0].agent_type == AgentType.AGENT
+
     def test_get_gemini_agents_no_mcp_dir(self) -> None:
         """Test _get_gemini_agents with no mcp_servers directory."""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1127,3 +1463,51 @@ class TestVendorAgentExtraction:
 
             assert len(agents) == 1
             assert agents[0].agent_type == AgentType.MCP_SERVER
+
+    def test_get_openai_agents_no_agents_md(self) -> None:
+        """Test _get_openai_agents when AGENTS.md doesn't exist."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            mcp_dir = temp_path / "mcp_servers"
+            mcp_dir.mkdir()
+            (mcp_dir / "server.json").write_text('{"name": "server"}')
+
+            mock_adapter = MagicMock()
+            mock_adapter.info.config_dir = temp_path
+
+            manager = UniversalAgentManager({"openai": mock_adapter})
+            agents = manager._get_openai_agents(mock_adapter)
+
+            # Should only find MCP server
+            assert len(agents) == 1
+            assert agents[0].agent_type == AgentType.MCP_SERVER
+
+    def test_get_openai_agents_no_mcp_dir(self) -> None:
+        """Test _get_openai_agents when mcp_servers directory doesn't exist."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            agents_md = temp_path / "AGENTS.md"
+            agents_md.write_text("# OpenAI Agents")
+
+            mock_adapter = MagicMock()
+            mock_adapter.info.config_dir = temp_path
+
+            manager = UniversalAgentManager({"openai": mock_adapter})
+            agents = manager._get_openai_agents(mock_adapter)
+
+            # Should only find AGENTS.md
+            assert len(agents) == 1
+            assert agents[0].agent_type == AgentType.AGENT
+
+    def test_get_openai_agents_empty_config(self) -> None:
+        """Test _get_openai_agents with no files at all."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+
+            mock_adapter = MagicMock()
+            mock_adapter.info.config_dir = temp_path
+
+            manager = UniversalAgentManager({"openai": mock_adapter})
+            agents = manager._get_openai_agents(mock_adapter)
+
+            assert agents == []

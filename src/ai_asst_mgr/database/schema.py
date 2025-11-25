@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from pathlib import Path
 
-SCHEMA_VERSION = "1.0.0"
+SCHEMA_VERSION = "1.1.0"
 
 # Schema metadata table
 SCHEMA_METADATA_SQL = """
@@ -167,6 +167,23 @@ CREATE TABLE IF NOT EXISTS capabilities (
 );
 """
 
+# GitHub commits table (tracks AI-attributed commits)
+GITHUB_COMMITS_SQL = """
+CREATE TABLE IF NOT EXISTS github_commits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sha TEXT NOT NULL UNIQUE,
+    repo TEXT NOT NULL,
+    branch TEXT,
+    message TEXT NOT NULL,
+    author_name TEXT,
+    author_email TEXT,
+    vendor_id TEXT,
+    committed_at TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (vendor_id) REFERENCES vendor_profiles(vendor_id)
+);
+"""
+
 # Indexes
 INDEXES_SQL = """
 CREATE INDEX IF NOT EXISTS idx_sessions_vendor ON sessions(vendor_id);
@@ -181,6 +198,9 @@ CREATE INDEX IF NOT EXISTS idx_weekly_agg_vendor_week ON weekly_aggregates(vendo
 CREATE INDEX IF NOT EXISTS idx_coaching_insights_vendor ON coaching_insights(vendor_id);
 CREATE INDEX IF NOT EXISTS idx_capabilities_vendor ON capabilities(vendor_id);
 CREATE INDEX IF NOT EXISTS idx_capabilities_type ON capabilities(capability_type);
+CREATE INDEX IF NOT EXISTS idx_github_commits_repo ON github_commits(repo);
+CREATE INDEX IF NOT EXISTS idx_github_commits_vendor ON github_commits(vendor_id);
+CREATE INDEX IF NOT EXISTS idx_github_commits_date ON github_commits(committed_at);
 """
 
 # Views
@@ -293,6 +313,19 @@ FROM coaching_insights
 GROUP BY vendor_id, priority;
 """
 
+GITHUB_VENDOR_STATS_VIEW_SQL = """
+CREATE VIEW IF NOT EXISTS v_github_vendor_stats AS
+SELECT
+    vendor_id,
+    COUNT(*) as commit_count,
+    COUNT(DISTINCT repo) as repo_count,
+    MIN(committed_at) as first_commit,
+    MAX(committed_at) as last_commit
+FROM github_commits
+WHERE vendor_id IS NOT NULL
+GROUP BY vendor_id;
+"""
+
 # Default vendor profiles
 DEFAULT_VENDORS_SQL = """
 INSERT OR IGNORE INTO vendor_profiles (vendor_id, display_name, config_dir)
@@ -321,6 +354,7 @@ def create_schema_sql() -> str:
             WEEKLY_AGGREGATES_SQL,
             COACHING_INSIGHTS_SQL,
             CAPABILITIES_SQL,
+            GITHUB_COMMITS_SQL,
             INDEXES_SQL,
             DAILY_USAGE_VIEW_SQL,
             VENDOR_STATS_VIEW_SQL,
@@ -330,6 +364,7 @@ def create_schema_sql() -> str:
             SESSION_DETAILS_VIEW_SQL,
             CAPABILITY_SUMMARY_VIEW_SQL,
             COACHING_STATUS_VIEW_SQL,
+            GITHUB_VENDOR_STATS_VIEW_SQL,
             DEFAULT_VENDORS_SQL,
         ]
     )
@@ -446,6 +481,7 @@ class SchemaManager:
             "weekly_aggregates",
             "coaching_insights",
             "capabilities",
+            "github_commits",
         }
 
         expected_views = {
@@ -457,6 +493,7 @@ class SchemaManager:
             "v_session_details",
             "v_capability_summary",
             "v_coaching_status",
+            "v_github_vendor_stats",
         }
 
         actual_tables = set(self.get_tables())

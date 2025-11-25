@@ -19,6 +19,8 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
 
+    from ai_asst_mgr.operations.github_parser import GitHubCommit
+
 
 @dataclass
 class VendorStats:
@@ -88,6 +90,47 @@ class AgentUsage:
     usage_count: int
     first_used: str
     last_used: str
+
+
+@dataclass
+class GitHubStats:
+    """GitHub activity statistics."""
+
+    total_commits: int
+    claude_commits: int
+    gemini_commits: int
+    openai_commits: int
+    repos_tracked: int
+    first_commit: str | None
+    last_commit: str | None
+
+    @property
+    def ai_attributed_commits(self) -> int:
+        """Total commits attributed to any AI vendor."""
+        return self.claude_commits + self.gemini_commits + self.openai_commits
+
+    @property
+    def ai_percentage(self) -> float:
+        """Percentage of commits attributed to AI vendors."""
+        if self.total_commits == 0:
+            return 0.0
+        return (self.ai_attributed_commits / self.total_commits) * 100
+
+
+@dataclass
+class GitHubCommitRecord:
+    """A GitHub commit record from the database."""
+
+    id: int
+    sha: str
+    repo: str
+    branch: str | None
+    message: str
+    author_name: str | None
+    author_email: str | None
+    vendor_id: str | None
+    committed_at: str
+    created_at: str
 
 
 class DatabaseManager:
@@ -605,3 +648,255 @@ class DatabaseManager:
             rows = cursor.fetchall()
 
         return [dict(row) for row in rows]
+
+    # GitHub commit methods
+
+    def record_github_commit(self, commit: GitHubCommit) -> bool:
+        """Record a GitHub commit with optional vendor attribution.
+
+        Uses INSERT OR REPLACE to handle duplicate commits (by SHA).
+
+        Args:
+            commit: GitHubCommit object from the parser module.
+
+        Returns:
+            True if commit was inserted/updated, False on error.
+        """
+        try:
+            with self._connection() as conn:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO github_commits (
+                        sha, repo, branch, message, author_name,
+                        author_email, vendor_id, committed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        commit.sha,
+                        commit.repo,
+                        commit.branch,
+                        commit.message,
+                        commit.author_name,
+                        commit.author_email,
+                        commit.vendor_id,
+                        commit.committed_at.isoformat(),
+                    ),
+                )
+                conn.commit()
+        except sqlite3.Error:
+            return False
+        else:
+            return True
+
+    def get_github_stats(self) -> GitHubStats:
+        """Get summary statistics for GitHub activity.
+
+        Returns:
+            GitHubStats object with commit counts and attribution breakdown.
+            Returns empty stats if the github_commits table doesn't exist.
+        """
+        try:
+            with self._connection() as conn:
+                # Total commits and repo count
+                cursor = conn.execute(
+                    """
+                    SELECT
+                        COUNT(*) as total_commits,
+                        COUNT(DISTINCT repo) as repos_tracked,
+                        MIN(committed_at) as first_commit,
+                        MAX(committed_at) as last_commit
+                    FROM github_commits
+                    """
+                )
+                totals = cursor.fetchone()
+
+                # Vendor breakdown
+                cursor = conn.execute(
+                    """
+                    SELECT
+                        vendor_id,
+                        COUNT(*) as commit_count
+                    FROM github_commits
+                    WHERE vendor_id IS NOT NULL
+                    GROUP BY vendor_id
+                    """
+                )
+                vendor_rows = cursor.fetchall()
+
+            vendor_counts = {row["vendor_id"]: row["commit_count"] for row in vendor_rows}
+
+            return GitHubStats(
+                total_commits=totals["total_commits"] if totals else 0,
+                claude_commits=vendor_counts.get("claude", 0),
+                gemini_commits=vendor_counts.get("gemini", 0),
+                openai_commits=vendor_counts.get("openai", 0),
+                repos_tracked=totals["repos_tracked"] if totals else 0,
+                first_commit=totals["first_commit"] if totals else None,
+                last_commit=totals["last_commit"] if totals else None,
+            )
+        except sqlite3.OperationalError:
+            # Table doesn't exist (old schema)
+            return GitHubStats(
+                total_commits=0,
+                claude_commits=0,
+                gemini_commits=0,
+                openai_commits=0,
+                repos_tracked=0,
+                first_commit=None,
+                last_commit=None,
+            )
+
+    def get_github_commits(
+        self,
+        vendor_id: str | None = None,
+        repo: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[GitHubCommitRecord]:
+        """Query GitHub commits with optional filters.
+
+        Args:
+            vendor_id: Filter by AI vendor (None for all, 'none' for unattributed).
+            repo: Filter by repository name.
+            limit: Maximum number of commits to return.
+            offset: Number of commits to skip (for pagination).
+
+        Returns:
+            List of GitHubCommitRecord objects, newest first.
+            Returns empty list if the github_commits table doesn't exist.
+        """
+        try:
+            query = "SELECT * FROM github_commits WHERE 1=1"
+            params: list[Any] = []
+
+            if vendor_id == "none":
+                query += " AND vendor_id IS NULL"
+            elif vendor_id:
+                query += " AND vendor_id = ?"
+                params.append(vendor_id)
+
+            if repo:
+                query += " AND repo = ?"
+                params.append(repo)
+
+            query += " ORDER BY committed_at DESC LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+
+            with self._connection() as conn:
+                cursor = conn.execute(query, params)
+                rows = cursor.fetchall()
+
+            return [
+                GitHubCommitRecord(
+                    id=row["id"],
+                    sha=row["sha"],
+                    repo=row["repo"],
+                    branch=row["branch"],
+                    message=row["message"],
+                    author_name=row["author_name"],
+                    author_email=row["author_email"],
+                    vendor_id=row["vendor_id"],
+                    committed_at=row["committed_at"],
+                    created_at=row["created_at"],
+                )
+                for row in rows
+            ]
+        except sqlite3.OperationalError:
+            # Table doesn't exist (old schema)
+            return []
+
+    def get_github_repos(self) -> list[str]:
+        """Get list of tracked repositories.
+
+        Returns:
+            List of repository names.
+            Returns empty list if the github_commits table doesn't exist.
+        """
+        try:
+            with self._connection() as conn:
+                cursor = conn.execute(
+                    """
+                    SELECT DISTINCT repo
+                    FROM github_commits
+                    ORDER BY repo
+                    """
+                )
+                rows = cursor.fetchall()
+
+            return [row["repo"] for row in rows]
+        except sqlite3.OperationalError:
+            # Table doesn't exist (old schema)
+            return []
+
+    def get_github_repo_stats(self) -> list[dict[str, str | int | None]]:
+        """Get repository statistics with commit counts.
+
+        Returns:
+            List of dicts with repo, total_commits, ai_commits, last_commit.
+            Returns empty list if the github_commits table doesn't exist.
+        """
+        try:
+            with self._connection() as conn:
+                cursor = conn.execute(
+                    """
+                    SELECT
+                        repo,
+                        COUNT(*) as total_commits,
+                        SUM(CASE WHEN ai_vendor IS NOT NULL THEN 1 ELSE 0 END) as ai_commits,
+                        MAX(committed_at) as last_commit
+                    FROM github_commits
+                    GROUP BY repo
+                    ORDER BY repo
+                    """
+                )
+                rows = cursor.fetchall()
+
+            return [
+                {
+                    "repo": row["repo"],
+                    "total_commits": row["total_commits"],
+                    "ai_commits": row["ai_commits"],
+                    "last_commit": row["last_commit"],
+                }
+                for row in rows
+            ]
+        except sqlite3.OperationalError:
+            # Table doesn't exist (old schema)
+            return []
+
+    def get_github_commit_by_sha(self, sha: str) -> GitHubCommitRecord | None:
+        """Get a specific commit by SHA.
+
+        Args:
+            sha: The commit SHA hash (full or prefix).
+
+        Returns:
+            GitHubCommitRecord if found, None otherwise.
+            Returns None if the github_commits table doesn't exist.
+        """
+        try:
+            with self._connection() as conn:
+                cursor = conn.execute(
+                    "SELECT * FROM github_commits WHERE sha LIKE ?",
+                    (f"{sha}%",),
+                )
+                row = cursor.fetchone()
+
+            if row is None:
+                return None
+
+            return GitHubCommitRecord(
+                id=row["id"],
+                sha=row["sha"],
+                repo=row["repo"],
+                branch=row["branch"],
+                message=row["message"],
+                author_name=row["author_name"],
+                author_email=row["author_email"],
+                vendor_id=row["vendor_id"],
+                committed_at=row["committed_at"],
+                created_at=row["created_at"],
+            )
+        except sqlite3.OperationalError:
+            # Table doesn't exist (old schema)
+            return None

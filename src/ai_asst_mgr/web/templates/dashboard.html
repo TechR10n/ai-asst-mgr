@@ -17,6 +17,16 @@
         <div class="stat-value">{{ data.installed_count }}</div>
         <div class="stat-label">Installed</div>
     </div>
+    {% if github.db_initialized %}
+    <div class="stat-card">
+        <div class="stat-value">{{ github.total_commits }}</div>
+        <div class="stat-label">Commits Tracked</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">{{ "%.1f"|format(github.ai_percentage) }}%</div>
+        <div class="stat-label">AI-Attributed</div>
+    </div>
+    {% endif %}
 </div>
 
 <div class="card">

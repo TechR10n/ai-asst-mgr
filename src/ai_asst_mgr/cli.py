@@ -31,6 +31,7 @@ from ai_asst_mgr.operations import (
     RestoreManager,
     SyncManager,
 )
+from ai_asst_mgr.operations.github_parser import GitLogParser, find_git_repos
 from ai_asst_mgr.platform import (
     IntervalType,
     ScheduleInfo,
@@ -3375,6 +3376,300 @@ def db_status() -> None:
         "Last Synced",
         status["last_synced_datetime"] or "[dim]Never[/dim]",
     )
+
+    console.print(table)
+
+
+# =============================================================================
+# GitHub Activity Tracking Commands
+# =============================================================================
+
+github_app = typer.Typer(help="GitHub activity tracking and AI vendor attribution")
+app.add_typer(github_app, name="github")
+
+# Display truncation constants
+_COMMIT_MSG_MAX_LEN = 42
+_REPO_NAME_MAX_LEN = 18
+_REPO_LIST_MAX_LEN = 28
+
+
+def _resolve_github_repos(
+    repo: Path | None,
+    base_path: Path | None,
+) -> list[Path]:
+    """Resolve which repositories to scan for GitHub sync."""
+    if repo:
+        if not repo.exists():
+            console.print(f"[red]Repository not found: {repo}[/red]")
+            raise typer.Exit(1)
+        return [repo]
+
+    if base_path:
+        if not base_path.exists():
+            console.print(f"[red]Path not found: {base_path}[/red]")
+            raise typer.Exit(1)
+        console.print(f"[dim]Searching for git repositories in {base_path}...[/dim]")
+        repos = find_git_repos(base_path)
+        if not repos:
+            console.print("[yellow]No git repositories found[/yellow]")
+            raise typer.Exit(0)
+        console.print(f"[dim]Found {len(repos)} repositories[/dim]")
+        return repos
+
+    return [Path.cwd()]
+
+
+@github_app.command("sync")
+def github_sync(
+    repo: Annotated[
+        Path | None,
+        typer.Option("--repo", "-r", help="Path to a specific git repository"),
+    ] = None,
+    base_path: Annotated[
+        Path | None,
+        typer.Option("--base", "-b", help="Base path to search for git repositories"),
+    ] = None,
+    limit: Annotated[
+        int,
+        typer.Option("--limit", "-n", help="Maximum commits per repository"),
+    ] = 100,
+) -> None:
+    """Sync GitHub commits and detect AI vendor attribution.
+
+    Parses git repositories to find commits and detect AI-generated code
+    based on commit message signatures (Claude, Gemini, OpenAI).
+
+    Examples:
+        ai-asst-mgr github sync                           # Scan current directory
+        ai-asst-mgr github sync --repo /path/to/project   # Specific repo
+        ai-asst-mgr github sync --base ~/Developer        # Scan directory for repos
+    """
+    if not DEFAULT_DB_PATH.exists():
+        console.print("[red]Database not found![/red]\nRun [bold]ai-asst-mgr db init[/bold] first.")
+        raise typer.Exit(1)
+
+    db = DatabaseManager(DEFAULT_DB_PATH)
+    parser = GitLogParser()
+    repos = _resolve_github_repos(repo, base_path)
+
+    # Sync each repository
+    total_commits = 0
+    ai_commits = 0
+    errors: list[str] = []
+
+    for repo_path in repos:
+        try:
+            commits = parser.parse_repo(repo_path, limit=limit)
+            for commit in commits:
+                if db.record_github_commit(commit):
+                    total_commits += 1
+                    if commit.vendor_id:
+                        ai_commits += 1
+        except (ValueError, OSError) as e:
+            errors.append(f"{repo_path.name}: {e}")
+
+    # Display results
+    if errors:
+        console.print(f"[yellow]Completed with {len(errors)} errors[/yellow]")
+        for error in errors[:5]:
+            console.print(f"  [red]• {error}[/red]")
+    else:
+        console.print(
+            Panel.fit(
+                f"[bold green]GitHub sync completed![/bold green]\n\n"
+                f"Commits synced: [cyan]{total_commits}[/cyan]\n"
+                f"AI-attributed:  [cyan]{ai_commits}[/cyan]\n"
+                f"Repositories:   [cyan]{len(repos)}[/cyan]",
+                title="Sync Results",
+                border_style="green",
+            )
+        )
+
+
+@github_app.command("stats")
+def github_stats() -> None:
+    """Show GitHub contribution statistics by AI vendor.
+
+    Displays a summary of commits tracked in the database,
+    broken down by AI vendor attribution.
+
+    Examples:
+        ai-asst-mgr github stats
+    """
+    if not DEFAULT_DB_PATH.exists():
+        console.print("[red]Database not found![/red]\nRun [bold]ai-asst-mgr db init[/bold] first.")
+        raise typer.Exit(1)
+
+    db = DatabaseManager(DEFAULT_DB_PATH)
+    stats = db.get_github_stats()
+
+    if stats.total_commits == 0:
+        console.print("[yellow]No commits tracked yet.[/yellow]")
+        console.print("Run [bold]ai-asst-mgr github sync[/bold] to import commits.")
+        raise typer.Exit(0)
+
+    # Create stats table
+    table = Table(title="GitHub Activity Statistics", show_header=False)
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", style="white")
+
+    table.add_row("Total Commits", str(stats.total_commits))
+    table.add_row("Repositories", str(stats.repos_tracked))
+    table.add_row("", "")  # Spacer
+    table.add_row("[bold]AI Attribution[/bold]", "")
+
+    # Format vendor rows with percentages
+    def _fmt_vendor(count: int, total: int) -> str:
+        if total == 0:
+            return "0"
+        pct = count / total * 100
+        return f"{count} ({pct:.1f}%)"
+
+    table.add_row("  Claude", _fmt_vendor(stats.claude_commits, stats.total_commits))
+    table.add_row("  Gemini", _fmt_vendor(stats.gemini_commits, stats.total_commits))
+    table.add_row("  OpenAI", _fmt_vendor(stats.openai_commits, stats.total_commits))
+    table.add_row("", "")  # Spacer
+    table.add_row(
+        "[bold]AI Total[/bold]",
+        f"[green]{stats.ai_attributed_commits}[/green] ({stats.ai_percentage:.1f}%)",
+    )
+
+    if stats.first_commit:
+        table.add_row("", "")  # Spacer
+        table.add_row("First Commit", stats.first_commit[:19])
+        table.add_row("Last Commit", stats.last_commit[:19] if stats.last_commit else "N/A")
+
+    console.print(table)
+
+
+@github_app.command("list")
+def github_list(
+    vendor: Annotated[
+        str | None,
+        typer.Option("--vendor", "-v", help="Filter by vendor (claude, gemini, openai, none)"),
+    ] = None,
+    repo_filter: Annotated[
+        str | None,
+        typer.Option("--repo", "-r", help="Filter by repository name"),
+    ] = None,
+    limit_count: Annotated[
+        int,
+        typer.Option("--limit", "-n", help="Number of commits to show"),
+    ] = 20,
+) -> None:
+    """List recent GitHub commits with vendor attribution.
+
+    Displays commits from the database with optional filtering
+    by vendor or repository.
+
+    Examples:
+        ai-asst-mgr github list                    # Recent 20 commits
+        ai-asst-mgr github list --vendor claude    # Claude-attributed only
+        ai-asst-mgr github list --vendor none      # Non-AI commits
+        ai-asst-mgr github list -n 50              # Show 50 commits
+    """
+    if not DEFAULT_DB_PATH.exists():
+        console.print("[red]Database not found![/red]\nRun [bold]ai-asst-mgr db init[/bold] first.")
+        raise typer.Exit(1)
+
+    db = DatabaseManager(DEFAULT_DB_PATH)
+    commits = db.get_github_commits(vendor_id=vendor, repo=repo_filter, limit=limit_count)
+
+    if not commits:
+        console.print("[yellow]No commits found matching filters.[/yellow]")
+        raise typer.Exit(0)
+
+    # Create commits table
+    table = Table(title=f"GitHub Commits (showing {len(commits)})", show_header=True)
+    table.add_column("SHA", style="cyan", width=7)
+    table.add_column("Repo", style="dim", width=20)
+    table.add_column("Message", width=45)
+    table.add_column("Vendor", width=8)
+    table.add_column("Date", style="dim", width=16)
+
+    for commit in commits:
+        # Format vendor badge
+        if commit.vendor_id == "claude":
+            vendor_badge = "[magenta]Claude[/magenta]"
+        elif commit.vendor_id == "gemini":
+            vendor_badge = "[blue]Gemini[/blue]"
+        elif commit.vendor_id == "openai":
+            vendor_badge = "[green]OpenAI[/green]"
+        else:
+            vendor_badge = "[dim]-[/dim]"
+
+        # Truncate message to first line
+        first_line = commit.message.split("\n")[0]
+        message = first_line[:_COMMIT_MSG_MAX_LEN]
+        if len(first_line) > _COMMIT_MSG_MAX_LEN:
+            message += "..."
+
+        # Truncate repo name
+        repo_display = commit.repo[:_REPO_NAME_MAX_LEN]
+        if len(commit.repo) > _REPO_NAME_MAX_LEN:
+            repo_display += "..."
+
+        table.add_row(
+            commit.sha[:7],
+            repo_display,
+            message,
+            vendor_badge,
+            commit.committed_at[:16],
+        )
+
+    console.print(table)
+
+
+@github_app.command("repos")
+def github_repos() -> None:
+    """List tracked repositories with commit counts.
+
+    Shows all repositories that have been synced to the database
+    with their commit counts and AI attribution statistics.
+
+    Examples:
+        ai-asst-mgr github repos
+    """
+    if not DEFAULT_DB_PATH.exists():
+        console.print("[red]Database not found![/red]\nRun [bold]ai-asst-mgr db init[/bold] first.")
+        raise typer.Exit(1)
+
+    db = DatabaseManager(DEFAULT_DB_PATH)
+    repos = db.get_github_repo_stats()
+
+    if not repos:
+        console.print("[yellow]No repositories tracked yet.[/yellow]")
+        console.print("Run [bold]ai-asst-mgr github sync[/bold] to import commits.")
+        raise typer.Exit(0)
+
+    table = Table(title="Tracked Repositories", show_header=True)
+    table.add_column("Repository", style="cyan", width=30)
+    table.add_column("Total", justify="right", width=8)
+    table.add_column("AI", justify="right", width=8)
+    table.add_column("AI %", justify="right", width=8)
+    table.add_column("Last Commit", style="dim", width=16)
+
+    for repo_info in repos:
+        total = int(repo_info["total_commits"] or 0)
+        ai_count = int(repo_info["ai_commits"] or 0)
+        ai_pct = (ai_count / total * 100) if total > 0 else 0
+
+        # Truncate repo name
+        repo_name = str(repo_info["repo"])
+        repo_display = repo_name[:_REPO_LIST_MAX_LEN]
+        if len(repo_name) > _REPO_LIST_MAX_LEN:
+            repo_display += "..."
+
+        last_commit = repo_info["last_commit"]
+        last_commit_str = str(last_commit)[:16] if last_commit else "N/A"
+
+        table.add_row(
+            repo_display,
+            str(total),
+            str(ai_count),
+            f"{ai_pct:.1f}%",
+            last_commit_str,
+        )
 
     console.print(table)
 

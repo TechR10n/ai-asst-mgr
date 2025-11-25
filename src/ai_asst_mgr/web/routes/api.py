@@ -15,6 +15,8 @@ from ai_asst_mgr.vendors import VendorRegistry
 from ai_asst_mgr.web.services import (
     get_agents_data,
     get_coaching_data,
+    get_github_commits_data,
+    get_github_summary,
     get_session_detail,
     get_sessions_data,
     get_sessions_stats,
@@ -137,3 +139,34 @@ async def get_agent_detail(vendor_id: str, agent_name: str) -> dict[str, Any]:
             "found": True,
         }
     return {"agent": None, "found": False, "error": "Agent not found"}
+
+
+@router.get("/github/stats")
+async def get_github_stats() -> dict[str, Any]:
+    """Get GitHub activity statistics.
+
+    Returns:
+        Dictionary containing GitHub commit stats and vendor breakdown.
+    """
+    return get_github_summary()
+
+
+@router.get("/github/commits")
+async def get_github_commits(
+    vendor: str | None = Query(default=None),
+    repo: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    """Get GitHub commits with optional filters.
+
+    Args:
+        vendor: Filter by AI vendor (claude, gemini, openai, none).
+        repo: Filter by repository name.
+        limit: Maximum number of commits to return.
+        offset: Number of commits to skip.
+
+    Returns:
+        Dictionary containing commit data.
+    """
+    return get_github_commits_data(vendor_id=vendor, repo=repo, limit=limit, offset=offset)

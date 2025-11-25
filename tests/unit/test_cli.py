@@ -3889,3 +3889,522 @@ class TestScheduleHelperFunctions:
 
         result = _get_interval_display(IntervalType.MONTHLY)
         assert "Monthly" in result
+
+
+class TestRestoreCommandHelpers:
+    """Tests for restore command helper functions."""
+
+    def test_resolve_backup_path_with_nonexistent_file(self) -> None:
+        """Test _resolve_backup_path exits when backup file doesn't exist."""
+        backup_manager = MagicMock()
+
+        with pytest.raises(typer.Exit) as exc_info:
+            _resolve_backup_path(Path("/nonexistent/backup.tar.gz"), None, backup_manager)
+        assert exc_info.value.exit_code == 1
+
+    def test_resolve_backup_path_with_vendor_no_backups(self) -> None:
+        """Test _resolve_backup_path exits when no backups found for vendor."""
+        backup_manager = MagicMock()
+        backup_manager.get_latest_backup.return_value = None
+
+        with pytest.raises(typer.Exit) as exc_info:
+            _resolve_backup_path(None, "claude", backup_manager)
+        assert exc_info.value.exit_code == 1
+
+    def test_resolve_restore_adapter_with_unknown_vendor(self) -> None:
+        """Test _resolve_restore_adapter exits for unknown vendor."""
+        registry = MagicMock()
+        registry.get_vendor.side_effect = KeyError("Unknown vendor")
+        backup_manager = MagicMock()
+
+        with pytest.raises(typer.Exit) as exc_info:
+            _resolve_restore_adapter(registry, "unknown", Path("/backup.tar.gz"), backup_manager)
+        assert exc_info.value.exit_code == 1
+
+
+class TestSyncCommandValidation:
+    """Tests for sync command validation."""
+
+    def test_sync_invalid_strategy(self) -> None:
+        """Test sync command with invalid merge strategy."""
+        result = runner.invoke(
+            app, ["sync", "https://github.com/test/repo.git", "--strategy", "invalid_strategy"]
+        )
+        assert result.exit_code == 1
+        assert "Invalid strategy" in result.stdout
+        assert "Valid strategies:" in result.stdout
+
+    def test_sync_unknown_vendor(self) -> None:
+        """Test sync command with unknown vendor."""
+        result = runner.invoke(
+            app, ["sync", "https://github.com/test/repo.git", "--vendor", "unknown_vendor"]
+        )
+        assert result.exit_code == 1
+        assert "Unknown vendor" in result.stdout
+        assert "Available vendors:" in result.stdout
+
+
+class TestAuditCommand:
+    """Tests for the audit command."""
+
+    def test_get_severity_style_critical(self) -> None:
+        """Test _get_severity_style with critical severity."""
+        from ai_asst_mgr.cli import _get_severity_style
+
+        result = _get_severity_style("critical")
+        assert "CRITICAL" in result
+        assert "bold red" in result
+
+    def test_get_severity_style_error(self) -> None:
+        """Test _get_severity_style with error severity."""
+        from ai_asst_mgr.cli import _get_severity_style
+
+        result = _get_severity_style("error")
+        assert "ERROR" in result
+        assert "red" in result
+
+    def test_get_severity_style_warning(self) -> None:
+        """Test _get_severity_style with warning severity."""
+        from ai_asst_mgr.cli import _get_severity_style
+
+        result = _get_severity_style("warning")
+        assert "WARNING" in result
+        assert "yellow" in result
+
+    def test_get_severity_style_info(self) -> None:
+        """Test _get_severity_style with info severity."""
+        from ai_asst_mgr.cli import _get_severity_style
+
+        result = _get_severity_style("info")
+        assert "INFO" in result
+        assert "dim" in result
+
+    def test_get_severity_style_unknown(self) -> None:
+        """Test _get_severity_style with unknown severity."""
+        from ai_asst_mgr.cli import _get_severity_style
+
+        result = _get_severity_style("unknown")
+        assert result == "unknown"
+
+    def test_get_category_style_security(self) -> None:
+        """Test _get_category_style with security category."""
+        from ai_asst_mgr.cli import _get_category_style
+
+        result = _get_category_style("security")
+        assert "security" in result
+        assert "cyan" in result
+
+    def test_get_category_style_config(self) -> None:
+        """Test _get_category_style with config category."""
+        from ai_asst_mgr.cli import _get_category_style
+
+        result = _get_category_style("config")
+        assert "config" in result
+        assert "blue" in result
+
+    def test_get_category_style_quality(self) -> None:
+        """Test _get_category_style with quality category."""
+        from ai_asst_mgr.cli import _get_category_style
+
+        result = _get_category_style("quality")
+        assert "quality" in result
+        assert "magenta" in result
+
+    def test_get_category_style_usage(self) -> None:
+        """Test _get_category_style with usage category."""
+        from ai_asst_mgr.cli import _get_category_style
+
+        result = _get_category_style("usage")
+        assert "usage" in result
+        assert "green" in result
+
+    def test_get_category_style_unknown(self) -> None:
+        """Test _get_category_style with unknown category."""
+        from ai_asst_mgr.cli import _get_category_style
+
+        result = _get_category_style("unknown")
+        assert result == "unknown"
+
+
+class TestDatabaseCommands:
+    """Tests for database management commands."""
+
+    def test_db_init_when_exists_without_force(self, tmp_path: Path) -> None:
+        """Test db init fails when database exists without --force."""
+        db_path = tmp_path / "sessions.db"
+        db_path.touch()
+
+        with patch("ai_asst_mgr.cli.DEFAULT_DB_PATH", db_path):
+            result = runner.invoke(app, ["db", "init"])
+            assert result.exit_code == 1
+            assert "already exists" in result.stdout
+            assert "--force" in result.stdout
+
+    def test_db_init_with_force_deletes_existing(self, tmp_path: Path) -> None:
+        """Test db init with --force deletes existing database."""
+        db_path = tmp_path / "sessions.db"
+        db_path.touch()
+
+        with patch("ai_asst_mgr.cli.DEFAULT_DB_PATH", db_path):
+            with patch("ai_asst_mgr.cli.DatabaseManager") as mock_db:
+                result = runner.invoke(app, ["db", "init", "--force"])
+                assert result.exit_code == 0
+                assert "Deleted existing database" in result.stdout
+                assert "initialized successfully" in result.stdout
+                mock_db.return_value.initialize.assert_called_once()
+
+    def test_db_init_creates_new_database(self, tmp_path: Path) -> None:
+        """Test db init creates new database."""
+        db_path = tmp_path / "sessions.db"
+
+        with patch("ai_asst_mgr.cli.DEFAULT_DB_PATH", db_path):
+            with patch("ai_asst_mgr.cli.DatabaseManager") as mock_db:
+                result = runner.invoke(app, ["db", "init"])
+                assert result.exit_code == 0
+                assert "initialized successfully" in result.stdout
+                mock_db.return_value.initialize.assert_called_once()
+
+    def test_db_sync_without_database(self, tmp_path: Path) -> None:
+        """Test db sync fails when database doesn't exist."""
+        db_path = tmp_path / "nonexistent.db"
+
+        with patch("ai_asst_mgr.cli.DEFAULT_DB_PATH", db_path):
+            result = runner.invoke(app, ["db", "sync"])
+            assert result.exit_code == 1
+            assert "Database not found" in result.stdout
+
+    def test_db_sync_with_errors(self, tmp_path: Path) -> None:
+        """Test db sync displays errors."""
+        db_path = tmp_path / "sessions.db"
+        db_path.touch()
+
+        with patch("ai_asst_mgr.cli.DEFAULT_DB_PATH", db_path):
+            with patch("ai_asst_mgr.cli.DatabaseManager"):
+                with patch("ai_asst_mgr.cli.sync_history_to_db") as mock_sync:
+                    from dataclasses import dataclass
+
+                    @dataclass
+                    class SyncResult:
+                        sessions_imported: int = 0
+                        messages_imported: int = 0
+                        sessions_skipped: int = 0
+                        errors: list[str] = None
+
+                    mock_sync.return_value = SyncResult(errors=["Error 1", "Error 2"])
+
+                    result = runner.invoke(app, ["db", "sync"])
+                    assert result.exit_code == 0
+                    assert "Completed with" in result.stdout
+                    assert "errors" in result.stdout
+
+    def test_db_sync_success(self, tmp_path: Path) -> None:
+        """Test db sync successful sync."""
+        db_path = tmp_path / "sessions.db"
+        db_path.touch()
+
+        with patch("ai_asst_mgr.cli.DEFAULT_DB_PATH", db_path):
+            with patch("ai_asst_mgr.cli.DatabaseManager"):
+                with patch("ai_asst_mgr.cli.sync_history_to_db") as mock_sync:
+                    from dataclasses import dataclass
+
+                    @dataclass
+                    class SyncResult:
+                        sessions_imported: int = 10
+                        messages_imported: int = 50
+                        sessions_skipped: int = 2
+                        errors: list[str] = None
+
+                    mock_sync.return_value = SyncResult(errors=[])
+
+                    result = runner.invoke(app, ["db", "sync"])
+                    assert result.exit_code == 0
+                    assert "Sync completed" in result.stdout
+                    assert "10" in result.stdout
+                    assert "50" in result.stdout
+
+    def test_db_status_without_database(self, tmp_path: Path) -> None:
+        """Test db status fails when database doesn't exist."""
+        db_path = tmp_path / "nonexistent.db"
+
+        with patch("ai_asst_mgr.cli.DEFAULT_DB_PATH", db_path):
+            result = runner.invoke(app, ["db", "status"])
+            assert result.exit_code == 1
+            assert "Database not found" in result.stdout
+
+    def test_db_status_displays_info(self, tmp_path: Path) -> None:
+        """Test db status displays database information."""
+        db_path = tmp_path / "sessions.db"
+        db_path.touch()
+
+        with patch("ai_asst_mgr.cli.DEFAULT_DB_PATH", db_path):
+            with patch("ai_asst_mgr.cli.DatabaseManager"):
+                with patch("ai_asst_mgr.cli.get_sync_status") as mock_status:
+                    mock_status.return_value = {
+                        "database_sessions": 10,
+                        "database_events": 50,
+                        "history_file_path": "~/.claude/history.jsonl",
+                        "history_file_entries": 15,
+                        "last_synced_datetime": "2024-01-01 12:00:00",
+                    }
+
+                    result = runner.invoke(app, ["db", "status"])
+                    assert result.exit_code == 0
+                    assert "Database Status" in result.stdout
+                    assert "10" in result.stdout
+                    assert "50" in result.stdout
+
+
+class TestGitHubCommands:
+    """Tests for GitHub activity tracking commands."""
+
+    def test_resolve_github_repos_nonexistent_repo(self) -> None:
+        """Test _resolve_github_repos with nonexistent repo path."""
+        from ai_asst_mgr.cli import _resolve_github_repos
+
+        with pytest.raises(typer.Exit) as exc_info:
+            _resolve_github_repos(Path("/nonexistent/repo"), None)
+        assert exc_info.value.exit_code == 1
+
+    def test_resolve_github_repos_nonexistent_base_path(self) -> None:
+        """Test _resolve_github_repos with nonexistent base path."""
+        from ai_asst_mgr.cli import _resolve_github_repos
+
+        with pytest.raises(typer.Exit) as exc_info:
+            _resolve_github_repos(None, Path("/nonexistent/base"))
+        assert exc_info.value.exit_code == 1
+
+    def test_resolve_github_repos_no_repos_found(self, tmp_path: Path) -> None:
+        """Test _resolve_github_repos when no git repos found."""
+        from ai_asst_mgr.cli import _resolve_github_repos
+
+        with patch("ai_asst_mgr.cli.find_git_repos", return_value=[]):
+            with pytest.raises(typer.Exit) as exc_info:
+                _resolve_github_repos(None, tmp_path)
+            assert exc_info.value.exit_code == 0
+
+    def test_resolve_github_repos_returns_repos(self, tmp_path: Path) -> None:
+        """Test _resolve_github_repos returns found repos."""
+        from ai_asst_mgr.cli import _resolve_github_repos
+
+        repo1 = tmp_path / "repo1"
+        repo2 = tmp_path / "repo2"
+
+        with patch("ai_asst_mgr.cli.find_git_repos", return_value=[repo1, repo2]):
+            result = _resolve_github_repos(None, tmp_path)
+            assert result == [repo1, repo2]
+
+    def test_github_sync_without_database(self, tmp_path: Path) -> None:
+        """Test github sync fails when database doesn't exist."""
+        db_path = tmp_path / "nonexistent.db"
+
+        with patch("ai_asst_mgr.cli.DEFAULT_DB_PATH", db_path):
+            result = runner.invoke(app, ["github", "sync"])
+            assert result.exit_code == 1
+            assert "Database not found" in result.stdout
+
+    def test_github_sync_with_errors(self, tmp_path: Path) -> None:
+        """Test github sync handles parse errors."""
+        db_path = tmp_path / "sessions.db"
+        db_path.touch()
+
+        repo_path = tmp_path / "repo"
+        repo_path.mkdir()
+
+        with patch("ai_asst_mgr.cli.DEFAULT_DB_PATH", db_path):
+            with patch("ai_asst_mgr.cli.DatabaseManager"):
+                with patch("ai_asst_mgr.cli.GitLogParser") as mock_parser:
+                    with patch("ai_asst_mgr.cli._resolve_github_repos", return_value=[repo_path]):
+                        mock_parser.return_value.parse_repo.side_effect = ValueError("Parse error")
+
+                        result = runner.invoke(app, ["github", "sync"])
+                        assert result.exit_code == 0
+                        assert "Completed with" in result.stdout
+                        assert "errors" in result.stdout
+
+    def test_github_sync_success(self, tmp_path: Path) -> None:
+        """Test github sync successful sync."""
+        db_path = tmp_path / "sessions.db"
+        db_path.touch()
+
+        repo_path = tmp_path / "repo"
+        repo_path.mkdir()
+
+        with patch("ai_asst_mgr.cli.DEFAULT_DB_PATH", db_path):
+            with patch("ai_asst_mgr.cli.DatabaseManager") as mock_db:
+                with patch("ai_asst_mgr.cli.GitLogParser") as mock_parser:
+                    with patch("ai_asst_mgr.cli._resolve_github_repos", return_value=[repo_path]):
+                        from dataclasses import dataclass
+
+                        @dataclass
+                        class Commit:
+                            vendor_id: str | None = None
+
+                        mock_parser.return_value.parse_repo.return_value = [
+                            Commit(vendor_id="claude"),
+                            Commit(vendor_id=None),
+                        ]
+                        mock_db.return_value.record_github_commit.return_value = True
+
+                        result = runner.invoke(app, ["github", "sync"])
+                        assert result.exit_code == 0
+                        assert "GitHub sync completed" in result.stdout
+
+    def test_github_stats_without_database(self, tmp_path: Path) -> None:
+        """Test github stats fails when database doesn't exist."""
+        db_path = tmp_path / "nonexistent.db"
+
+        with patch("ai_asst_mgr.cli.DEFAULT_DB_PATH", db_path):
+            result = runner.invoke(app, ["github", "stats"])
+            assert result.exit_code == 1
+            assert "Database not found" in result.stdout
+
+    def test_github_stats_no_commits(self, tmp_path: Path) -> None:
+        """Test github stats when no commits tracked."""
+        db_path = tmp_path / "sessions.db"
+        db_path.touch()
+
+        with patch("ai_asst_mgr.cli.DEFAULT_DB_PATH", db_path):
+            with patch("ai_asst_mgr.cli.DatabaseManager") as mock_db:
+                from dataclasses import dataclass
+
+                @dataclass
+                class Stats:
+                    total_commits: int = 0
+                    repos_tracked: int = 0
+                    claude_commits: int = 0
+                    gemini_commits: int = 0
+                    openai_commits: int = 0
+                    ai_attributed_commits: int = 0
+                    ai_percentage: float = 0.0
+                    first_commit: str | None = None
+                    last_commit: str | None = None
+
+                mock_db.return_value.get_github_stats.return_value = Stats()
+
+                result = runner.invoke(app, ["github", "stats"])
+                assert result.exit_code == 0
+                assert "No commits tracked" in result.stdout
+
+    def test_github_stats_displays_stats(self, tmp_path: Path) -> None:
+        """Test github stats displays statistics."""
+        db_path = tmp_path / "sessions.db"
+        db_path.touch()
+
+        with patch("ai_asst_mgr.cli.DEFAULT_DB_PATH", db_path):
+            with patch("ai_asst_mgr.cli.DatabaseManager") as mock_db:
+                from dataclasses import dataclass
+
+                @dataclass
+                class Stats:
+                    total_commits: int = 100
+                    repos_tracked: int = 5
+                    claude_commits: int = 30
+                    gemini_commits: int = 20
+                    openai_commits: int = 10
+                    ai_attributed_commits: int = 60
+                    ai_percentage: float = 60.0
+                    first_commit: str = "2024-01-01 12:00:00"
+                    last_commit: str = "2024-01-15 18:00:00"
+
+                mock_db.return_value.get_github_stats.return_value = Stats()
+
+                result = runner.invoke(app, ["github", "stats"])
+                assert result.exit_code == 0
+                assert "GitHub Activity Statistics" in result.stdout
+                assert "100" in result.stdout
+                assert "60.0" in result.stdout
+
+    def test_github_list_without_database(self, tmp_path: Path) -> None:
+        """Test github list fails when database doesn't exist."""
+        db_path = tmp_path / "nonexistent.db"
+
+        with patch("ai_asst_mgr.cli.DEFAULT_DB_PATH", db_path):
+            result = runner.invoke(app, ["github", "list"])
+            assert result.exit_code == 1
+            assert "Database not found" in result.stdout
+
+    def test_github_list_no_commits(self, tmp_path: Path) -> None:
+        """Test github list when no commits found."""
+        db_path = tmp_path / "sessions.db"
+        db_path.touch()
+
+        with patch("ai_asst_mgr.cli.DEFAULT_DB_PATH", db_path):
+            with patch("ai_asst_mgr.cli.DatabaseManager") as mock_db:
+                mock_db.return_value.get_github_commits.return_value = []
+
+                result = runner.invoke(app, ["github", "list"])
+                assert result.exit_code == 0
+                assert "No commits found" in result.stdout
+
+    def test_github_list_displays_commits(self, tmp_path: Path) -> None:
+        """Test github list displays commit table."""
+        db_path = tmp_path / "sessions.db"
+        db_path.touch()
+
+        with patch("ai_asst_mgr.cli.DEFAULT_DB_PATH", db_path):
+            with patch("ai_asst_mgr.cli.DatabaseManager") as mock_db:
+                from dataclasses import dataclass
+
+                @dataclass
+                class Commit:
+                    sha: str
+                    repo: str
+                    message: str
+                    vendor_id: str | None
+                    committed_at: str
+
+                mock_db.return_value.get_github_commits.return_value = [
+                    Commit("abc1234", "test-repo", "Test commit", "claude", "2024-01-01 12:00:00"),
+                    Commit("def5678", "other-repo", "Another commit", None, "2024-01-02 14:00:00"),
+                ]
+
+                result = runner.invoke(app, ["github", "list"])
+                assert result.exit_code == 0
+                assert "GitHub Commits" in result.stdout
+                assert "test-repo" in result.stdout
+                assert "Test commit" in result.stdout
+
+    def test_github_repos_without_database(self, tmp_path: Path) -> None:
+        """Test github repos fails when database doesn't exist."""
+        db_path = tmp_path / "nonexistent.db"
+
+        with patch("ai_asst_mgr.cli.DEFAULT_DB_PATH", db_path):
+            result = runner.invoke(app, ["github", "repos"])
+            assert result.exit_code == 1
+            assert "Database not found" in result.stdout
+
+    def test_github_repos_no_repos(self, tmp_path: Path) -> None:
+        """Test github repos when no repos tracked."""
+        db_path = tmp_path / "sessions.db"
+        db_path.touch()
+
+        with patch("ai_asst_mgr.cli.DEFAULT_DB_PATH", db_path):
+            with patch("ai_asst_mgr.cli.DatabaseManager") as mock_db:
+                mock_db.return_value.get_github_repo_stats.return_value = []
+
+                result = runner.invoke(app, ["github", "repos"])
+                assert result.exit_code == 0
+                assert "No repositories tracked" in result.stdout
+
+    def test_github_repos_displays_repos(self, tmp_path: Path) -> None:
+        """Test github repos displays repository table."""
+        db_path = tmp_path / "sessions.db"
+        db_path.touch()
+
+        with patch("ai_asst_mgr.cli.DEFAULT_DB_PATH", db_path):
+            with patch("ai_asst_mgr.cli.DatabaseManager") as mock_db:
+                mock_db.return_value.get_github_repo_stats.return_value = [
+                    {
+                        "repo": "test-repo",
+                        "total_commits": 100,
+                        "ai_commits": 60,
+                        "last_commit": "2024-01-15 18:00:00",
+                    },
+                ]
+
+                result = runner.invoke(app, ["github", "repos"])
+                assert result.exit_code == 0
+                assert "Tracked Repositories" in result.stdout
+                assert "test-repo" in result.stdout
+                assert "100" in result.stdout
+                assert "60.0" in result.stdout
