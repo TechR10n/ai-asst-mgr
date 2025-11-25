@@ -5,11 +5,12 @@ This module provides the main CLI entry point using Typer for command execution.
 
 from __future__ import annotations
 
+import json
 import platform
 import shutil
 import sys
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
 from rich.console import Console
@@ -19,6 +20,9 @@ from rich.text import Text
 
 from ai_asst_mgr.adapters.base import VendorStatus
 from ai_asst_mgr.vendors import VendorRegistry
+
+if TYPE_CHECKING:
+    from ai_asst_mgr.adapters.base import VendorAdapter
 
 app = typer.Typer(
     name="ai-asst-mgr",
@@ -183,17 +187,65 @@ def status(
 
 
 @app.command()
-def init(
+def config(
+    key: Annotated[
+        str | None,
+        typer.Argument(help="Configuration key to get or set"),
+    ] = None,
+    value: Annotated[
+        str | None,
+        typer.Argument(help="Value to set for the configuration key"),
+    ] = None,
     vendor: Annotated[
         str | None,
-        typer.Option("--vendor", "-v", help="Initialize specific vendor"),
+        typer.Option("--vendor", "-v", help="Vendor to configure"),
     ] = None,
+    list_all: Annotated[
+        bool,
+        typer.Option("--list", "-l", help="List all configuration values"),
+    ] = False,
 ) -> None:
-    """Initialize AI assistant vendor configurations."""
+    """Get or set configuration values for AI assistant vendors.
+
+    Examples:
+        ai-asst-mgr config --list                         # List all config
+        ai-asst-mgr config --vendor claude --list         # List Claude config
+        ai-asst-mgr config theme                          # Get value for 'theme'
+        ai-asst-mgr config theme "light"                  # Set theme to "light"
+        ai-asst-mgr config --vendor claude version        # Get Claude version
+        ai-asst-mgr config mcp.servers.brave.url "https://..." # Set nested value
+    """
+    registry = VendorRegistry()
+
+    # Determine which vendors to operate on
     if vendor:
-        console.print(f"[green]Initializing {vendor}...[/green]")
+        try:
+            vendors_to_use = {vendor: registry.get_vendor(vendor)}
+        except KeyError:
+            console.print(f"[red]Error: Unknown vendor '{vendor}'[/red]")
+            available = ", ".join(registry.get_all_vendors().keys())
+            console.print(f"[yellow]Available vendors: {available}[/yellow]")
+            raise typer.Exit(code=1) from None
     else:
-        console.print("[green]Initializing all vendors...[/green]")
+        vendors_to_use = registry.get_all_vendors()
+
+    # Handle --list flag
+    if list_all:
+        _config_list_all(vendors_to_use)
+        return
+
+    # Handle get/set operations
+    if key is None:
+        console.print("[red]Error: Please provide a configuration key or use --list[/red]")
+        console.print("[yellow]Usage: ai-asst-mgr config KEY [VALUE][/yellow]")
+        raise typer.Exit(code=1)
+
+    # If value is provided, set the config
+    if value is not None:
+        _config_set_value(vendors_to_use, key, value, vendor)
+    else:
+        # Get the config value
+        _config_get_value(vendors_to_use, key, vendor)
 
 
 @app.command()
@@ -750,6 +802,403 @@ def _attempt_fixes(issues: list[dict[str, str]]) -> int:
         # For safety, we don't auto-fix permission issues
 
     return fixed
+
+
+@app.command()
+def init(
+    vendor: Annotated[
+        str | None,
+        typer.Option("--vendor", "-v", help="Initialize specific vendor"),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Show what would be initialized without making changes"),
+    ] = False,
+    force: Annotated[
+        bool,
+        typer.Option("--force", "-f", help="Force reinitialization even if already configured"),
+    ] = False,
+) -> None:
+    """Initialize AI assistant vendor configurations.
+
+    Creates necessary directory structures and default configuration files
+    for AI assistant vendors. By default, initializes all installed vendors,
+    or you can specify a single vendor with --vendor.
+
+    Examples:
+        ai-asst-mgr init                  # Initialize all vendors
+        ai-asst-mgr init --vendor gemini  # Initialize specific vendor
+        ai-asst-mgr init --dry-run        # Preview what would be initialized
+        ai-asst-mgr init --force          # Force reinitialize all vendors
+
+    Args:
+        vendor: Optional vendor name to initialize. If not provided, initializes all.
+        dry_run: If True, shows what would be initialized without making changes.
+        force: If True, reinitializes even if already configured.
+    """
+    registry = VendorRegistry()
+
+    # Get vendors to initialize
+    vendors_to_init = _get_vendors_to_init(registry, vendor)
+
+    # Display header
+    _display_init_header(dry_run)
+
+    # Process vendors and collect results
+    results_table, counts = _process_vendor_initializations(
+        vendors_to_init,
+        dry_run=dry_run,
+        force=force,
+    )
+
+    # Display results and summary
+    console.print(results_table)
+    _display_init_summary(counts, dry_run)
+
+    # Exit with appropriate code
+    if counts["failed"] > 0:
+        raise typer.Exit(code=1)
+
+
+# init command helpers
+def _get_vendors_to_init(registry: VendorRegistry, vendor: str | None) -> dict[str, VendorAdapter]:
+    """Get the vendors that should be initialized.
+
+    Args:
+        registry: VendorRegistry instance.
+        vendor: Optional specific vendor name.
+
+    Returns:
+        Dictionary of vendors to initialize.
+
+    Raises:
+        typer.Exit: If vendor is invalid.
+    """
+    if vendor:
+        try:
+            return {vendor: registry.get_vendor(vendor)}
+        except KeyError:
+            console.print(f"[red]Error: Unknown vendor '{vendor}'[/red]")
+            available = ", ".join(registry.get_all_vendors().keys())
+            console.print(f"[yellow]Available vendors: {available}[/yellow]")
+            raise typer.Exit(code=1) from None
+    return registry.get_all_vendors()
+
+
+def _display_init_header(dry_run: bool) -> None:
+    """Display initialization header.
+
+    Args:
+        dry_run: Whether this is a dry run.
+    """
+    if dry_run:
+        console.print(
+            Panel.fit(
+                "[bold blue]Initialization Preview (Dry Run)[/bold blue]",
+                border_style="blue",
+            )
+        )
+    else:
+        console.print(
+            Panel.fit(
+                "[bold green]Initializing Vendor Configurations[/bold green]",
+                border_style="green",
+            )
+        )
+
+
+def _process_vendor_initializations(
+    vendors_to_init: dict[str, VendorAdapter],
+    dry_run: bool,
+    force: bool,
+) -> tuple[Table, dict[str, int]]:
+    """Process vendor initializations and build results table.
+
+    Args:
+        vendors_to_init: Dictionary of vendors to initialize.
+        dry_run: Whether this is a dry run.
+        force: Whether to force reinitialize.
+
+    Returns:
+        Tuple of (results_table, counts_dict).
+    """
+    # Create results table
+    results_table = Table(show_header=True, header_style="bold cyan")
+    results_table.add_column("Vendor", style="bold", width=15)
+    results_table.add_column("Status", width=20)
+    results_table.add_column("Action", width=40)
+
+    # Track results
+    counts = {"initialized": 0, "skipped": 0, "failed": 0}
+
+    # Initialize each vendor
+    for vendor_name, adapter in vendors_to_init.items():
+        try:
+            status, action = _initialize_vendor(
+                adapter,
+                dry_run=dry_run,
+                force=force,
+            )
+
+            # Categorize result and update display
+            status_display, count_category = _categorize_init_result(status)
+            counts[count_category] += 1
+
+            results_table.add_row(
+                adapter.info.name,
+                status_display,
+                action,
+            )
+
+        except Exception as e:
+            counts["failed"] += 1
+            results_table.add_row(
+                adapter.info.name if hasattr(adapter, "info") else vendor_name,
+                "[red]Failed[/red]",
+                f"Error: {e!s}",
+            )
+
+    return results_table, counts
+
+
+def _display_init_summary(counts: dict[str, int], dry_run: bool) -> None:
+    """Display initialization summary.
+
+    Args:
+        counts: Dictionary with count of initialized, skipped, and failed.
+        dry_run: Whether this is a dry run.
+    """
+    console.print("\n[bold]Summary:[/bold]")
+    if dry_run:
+        console.print(f"  Would initialize: {counts['initialized']}")
+        console.print(f"  Would skip: {counts['skipped']}")
+    else:
+        console.print(f"  Initialized: {counts['initialized']}")
+        console.print(f"  Skipped: {counts['skipped']}")
+        console.print(f"  Failed: {counts['failed']}")
+
+
+def _initialize_vendor(
+    adapter: VendorAdapter,
+    dry_run: bool = False,
+    force: bool = False,
+) -> tuple[str, str]:
+    """Initialize a single vendor's configuration.
+
+    Args:
+        adapter: VendorAdapter instance for the vendor.
+        dry_run: If True, only check what would be done.
+        force: If True, reinitialize even if already configured.
+
+    Returns:
+        Tuple of (status, action) strings describing the result.
+
+    Raises:
+        RuntimeError: If initialization fails (propagates from adapter.initialize()).
+    """
+    # Check current status
+    is_configured = adapter.is_configured()
+
+    # Determine if we should initialize
+    if is_configured and not force:
+        return ("Skipped", "Already configured (use --force to reinitialize)")
+
+    # Dry run - just report what would happen
+    if dry_run:
+        if is_configured:
+            return ("Would initialize", "Force reinitialize configuration")
+        return ("Would initialize", "Create configuration directory and defaults")
+
+    # Actually initialize
+    adapter.initialize()
+
+    if is_configured:
+        return ("Initialized", "Reinitialized configuration")
+    return ("Initialized", "Created configuration directory and defaults")
+
+
+def _categorize_init_result(status: str) -> tuple[str, str]:
+    """Categorize initialization result for display and counting.
+
+    Args:
+        status: Status string from _initialize_vendor.
+
+    Returns:
+        Tuple of (status_display, count_category) where count_category is one of:
+        "initialized", "skipped", or "failed".
+    """
+    if "Initialized" in status or "Would initialize" in status:
+        return (f"[green]{status}[/green]", "initialized")
+    if "Skipped" in status:
+        return (f"[yellow]{status}[/yellow]", "skipped")
+    return (f"[red]{status}[/red]", "failed")
+
+
+# config command helpers
+def _config_list_all(vendors: dict[str, VendorAdapter]) -> None:
+    """List all configuration values for vendors.
+
+    Args:
+        vendors: Dictionary of vendor name to adapter mappings.
+    """
+    for vendor_name, adapter in vendors.items():
+        try:
+            # Check if vendor is configured
+            if not adapter.is_configured():
+                console.print(f"\n[yellow]{vendor_name.capitalize()}: Not configured[/yellow]")
+                continue
+
+            # Load the full settings
+            if hasattr(adapter, "_load_settings"):
+                settings = adapter._load_settings()
+            else:
+                console.print(
+                    f"\n[yellow]{vendor_name.capitalize()}: Unable to load settings[/yellow]"
+                )
+                continue
+
+            # Display vendor config table
+            console.print(f"\n[bold cyan]{vendor_name.capitalize()} Configuration:[/bold cyan]")
+            table = Table(show_header=True, header_style="bold magenta")
+            table.add_column("Key", style="cyan", width=30)
+            table.add_column("Value", style="green", width=50)
+
+            # Flatten nested dict for display
+            for config_key, config_value in _flatten_dict(settings).items():
+                value_str = _format_config_value(config_value)
+                table.add_row(config_key, value_str)
+
+            console.print(table)
+
+        except Exception as e:
+            console.print(f"\n[red]Error listing config for {vendor_name}: {e}[/red]")
+
+
+def _config_get_value(vendors: dict[str, VendorAdapter], key: str, vendor_name: str | None) -> None:
+    """Get a configuration value.
+
+    Args:
+        vendors: Dictionary of vendor name to adapter mappings.
+        key: Configuration key to retrieve.
+        vendor_name: Optional vendor name (if specified, only get from that vendor).
+    """
+    found = False
+
+    for name, adapter in vendors.items():
+        try:
+            value = adapter.get_config(key)
+            found = True
+
+            # If specific vendor was requested, just show the value
+            if vendor_name:
+                console.print(_format_config_value(value))
+            else:
+                # Show vendor name with the value
+                console.print(f"[cyan]{name.capitalize()}:[/cyan] {_format_config_value(value)}")
+
+        except KeyError:
+            if vendor_name:
+                # If specific vendor was requested and key not found, show error
+                console.print(f"[red]Configuration key '{key}' not found in {name}[/red]")
+                raise typer.Exit(code=1) from None
+            # If querying all vendors, skip those that don't have the key
+            continue
+        except Exception as e:
+            console.print(f"[red]Error reading config from {name}: {e}[/red]")
+            if vendor_name:
+                raise typer.Exit(code=1) from e
+
+    if not found and not vendor_name:
+        console.print(f"[red]Configuration key '{key}' not found in any vendor[/red]")
+        raise typer.Exit(code=1)
+
+
+def _config_set_value(
+    vendors: dict[str, VendorAdapter],
+    key: str,
+    value: str,
+    vendor_name: str | None,  # noqa: ARG001
+) -> None:
+    """Set a configuration value.
+
+    Args:
+        vendors: Dictionary of vendor name to adapter mappings.
+        key: Configuration key to set.
+        value: Value to set.
+        vendor_name: Optional vendor name (if specified, only set for that vendor).
+    """
+    # Parse value - try to convert to appropriate type
+    parsed_value = _parse_config_value(value)
+
+    for name, adapter in vendors.items():
+        try:
+            adapter.set_config(key, parsed_value)
+            console.print(
+                f"[green]Set {key} = {_format_config_value(parsed_value)} for {name}[/green]"
+            )
+
+        except ValueError as e:
+            console.print(f"[red]Invalid value for {name}: {e}[/red]")
+            raise typer.Exit(code=1) from e
+        except Exception as e:
+            console.print(f"[red]Error setting config for {name}: {e}[/red]")
+            raise typer.Exit(code=1) from e
+
+
+def _flatten_dict(d: dict[str, Any], parent_key: str = "", sep: str = ".") -> dict[str, Any]:
+    """Flatten a nested dictionary using dot notation.
+
+    Args:
+        d: Dictionary to flatten.
+        parent_key: Parent key prefix.
+        sep: Separator for nested keys.
+
+    Returns:
+        Flattened dictionary with dot-notation keys.
+    """
+    items: list[tuple[str, Any]] = []
+    for k, v in d.items():
+        new_key = f"{parent_key}{sep}{k}" if parent_key else k
+        if isinstance(v, dict):
+            items.extend(_flatten_dict(v, new_key, sep=sep).items())
+        else:
+            items.append((new_key, v))
+    return dict(items)
+
+
+def _format_config_value(value: object) -> str:
+    """Format a configuration value for display.
+
+    Args:
+        value: Value to format.
+
+    Returns:
+        Formatted string representation.
+    """
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, indent=2)
+    if isinstance(value, bool):
+        return "[green]true[/green]" if value else "[red]false[/red]"
+    if value is None:
+        return "[dim]null[/dim]"
+    return str(value)
+
+
+def _parse_config_value(value: str) -> object:
+    """Parse a string value to appropriate type.
+
+    Args:
+        value: String value to parse.
+
+    Returns:
+        Parsed value (bool, int, float, dict, list, or str).
+    """
+    # Try to parse as JSON first (handles objects, arrays, booleans, numbers)
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        # Return as string if not valid JSON
+        return value
 
 
 def main() -> None:
