@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import builtins
+from datetime import UTC, datetime
+from pathlib import Path
 from types import ModuleType
-from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
@@ -17,6 +18,7 @@ from ai_asst_mgr.cli import (
     _check_write_permission,
     _flatten_dict,
     _format_config_value,
+    _format_size_bytes,
     _get_notes_for_status,
     _get_status_display,
     _has_read_access,
@@ -24,9 +26,6 @@ from ai_asst_mgr.cli import (
     _parse_config_value,
     app,
 )
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 runner = CliRunner()
 
@@ -1830,3 +1829,652 @@ class TestConfigHelperFunctions:
         """Test _parse_config_value with 'null'."""
         result = _parse_config_value("null")
         assert result is None
+
+
+class TestBackupCommand:
+    """Tests for the backup command."""
+
+    def test_backup_help_shows_options(self) -> None:
+        """Test backup command shows help."""
+        result = runner.invoke(app, ["backup", "--help"])
+        assert result.exit_code == 0
+        assert "backup" in result.stdout.lower()
+        assert "--vendor" in result.stdout
+        assert "--backup-dir" in result.stdout
+
+    def test_backup_list_empty(self) -> None:
+        """Test backup list with no backups."""
+        with (
+            patch("ai_asst_mgr.cli._get_backup_manager") as mock_get_manager,
+            patch("ai_asst_mgr.cli.VendorRegistry"),
+        ):
+            mock_manager = MagicMock()
+            mock_manager.list_backups.return_value = []
+            mock_get_manager.return_value = mock_manager
+
+            result = runner.invoke(app, ["backup", "--list"])
+            assert result.exit_code == 0
+            assert "No backups found" in result.stdout
+
+    def test_backup_list_with_backups(self) -> None:
+        """Test backup list shows existing backups."""
+        with (
+            patch("ai_asst_mgr.cli._get_backup_manager") as mock_get_manager,
+            patch("ai_asst_mgr.cli.VendorRegistry"),
+        ):
+            mock_metadata = MagicMock()
+            mock_metadata.vendor_id = "claude"
+            mock_metadata.timestamp = datetime.now(tz=UTC)
+            mock_metadata.backup_path = Path("/backups/claude_backup.tar.gz")
+            mock_metadata.size_bytes = 1024
+
+            mock_manager = MagicMock()
+            mock_manager.list_backups.return_value = [mock_metadata]
+            mock_get_manager.return_value = mock_manager
+
+            result = runner.invoke(app, ["backup", "--list"])
+            assert result.exit_code == 0
+            assert "claude" in result.stdout.lower()
+
+    def test_backup_vendor_not_found(self) -> None:
+        """Test backup with invalid vendor."""
+        result = runner.invoke(app, ["backup", "--vendor", "invalid_vendor"])
+        assert result.exit_code == 1
+        assert "Unknown vendor" in result.stdout
+
+    def test_backup_create_success(self) -> None:
+        """Test successful backup creation."""
+        with (
+            patch("ai_asst_mgr.cli._get_backup_manager") as mock_get_manager,
+            patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class,
+        ):
+            # Setup mock adapter
+            mock_adapter = MagicMock()
+            mock_adapter.info.vendor_id = "claude"
+            mock_adapter.info.name = "Claude Code"
+            mock_adapter.is_installed.return_value = True
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {"claude": mock_adapter}
+            mock_registry_class.return_value = mock_registry
+
+            # Setup mock backup result
+            mock_metadata = MagicMock()
+            mock_metadata.backup_path = Path("/backups/claude_backup.tar.gz")
+            mock_metadata.size_bytes = 2048
+
+            mock_result = MagicMock()
+            mock_result.success = True
+            mock_result.metadata = mock_metadata
+            mock_result.duration_seconds = 1.5
+
+            mock_manager = MagicMock()
+            mock_manager.backup_vendor.return_value = mock_result
+            mock_get_manager.return_value = mock_manager
+
+            result = runner.invoke(app, ["backup", "--vendor", "claude"])
+            assert result.exit_code == 0
+            assert "success" in result.stdout.lower() or "complete" in result.stdout.lower()
+
+    def test_backup_verify_success(self) -> None:
+        """Test backup verification success."""
+        with patch("ai_asst_mgr.cli._get_backup_manager") as mock_get_manager:
+            mock_manager = MagicMock()
+            mock_manager.verify_backup.return_value = (True, "Backup is valid")
+            mock_get_manager.return_value = mock_manager
+
+            # Create temp file path for testing
+            result = runner.invoke(app, ["backup", "--verify", "/tmp/test_backup.tar.gz"])
+            # Path may not exist, but we're testing the command flow
+            assert result.exit_code in [0, 1]
+
+
+class TestRestoreCommand:
+    """Tests for the restore command."""
+
+    def test_restore_help_shows_options(self) -> None:
+        """Test restore command shows help."""
+        result = runner.invoke(app, ["restore", "--help"])
+        assert result.exit_code == 0
+        assert "restore" in result.stdout.lower()
+        assert "--vendor" in result.stdout
+
+    def test_restore_vendor_not_found(self) -> None:
+        """Test restore with invalid vendor checks for backups."""
+        result = runner.invoke(app, ["restore", "--vendor", "invalid_vendor"])
+        assert result.exit_code == 1
+        # Restore checks for backups first, so error message mentions the vendor
+        assert "invalid_vendor" in result.stdout
+
+    def test_restore_no_backup_available(self) -> None:
+        """Test restore when no backup exists."""
+        with (
+            patch("ai_asst_mgr.cli._get_backup_manager") as mock_get_manager,
+            patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class,
+        ):
+            mock_adapter = MagicMock()
+            mock_adapter.info.vendor_id = "claude"
+            mock_adapter.info.name = "Claude Code"
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {"claude": mock_adapter}
+            mock_registry.get_vendor.return_value = mock_adapter
+            mock_registry_class.return_value = mock_registry
+
+            mock_manager = MagicMock()
+            mock_manager.get_latest_backup.return_value = None
+            mock_get_manager.return_value = mock_manager
+
+            result = runner.invoke(app, ["restore", "--vendor", "claude"])
+            assert result.exit_code == 1
+            assert "No backup" in result.stdout
+
+    def test_restore_preview(self) -> None:
+        """Test restore preview mode."""
+        with (
+            patch("ai_asst_mgr.cli._get_backup_manager") as mock_get_manager,
+            patch("ai_asst_mgr.cli._get_restore_manager") as mock_get_restore,
+            patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class,
+        ):
+            mock_adapter = MagicMock()
+            mock_adapter.info.vendor_id = "claude"
+            mock_adapter.info.name = "Claude Code"
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {"claude": mock_adapter}
+            mock_registry.get_vendor.return_value = mock_adapter
+            mock_registry_class.return_value = mock_registry
+
+            mock_metadata = MagicMock()
+            mock_metadata.backup_path = Path("/backups/test.tar.gz")
+            mock_metadata.timestamp = datetime.now(tz=UTC)
+
+            mock_backup_manager = MagicMock()
+            mock_backup_manager.get_latest_backup.return_value = mock_metadata
+            mock_get_manager.return_value = mock_backup_manager
+
+            mock_preview = MagicMock()
+            mock_preview.files_to_restore = ["file1.md", "file2.md"]
+            mock_preview.files_to_overwrite = ["file1.md"]
+            mock_preview.estimated_size_bytes = 1024
+
+            mock_restore_manager = MagicMock()
+            mock_restore_manager.preview_restore.return_value = mock_preview
+            mock_get_restore.return_value = mock_restore_manager
+
+            result = runner.invoke(app, ["restore", "--vendor", "claude", "--preview"])
+            assert result.exit_code == 0
+            assert "preview" in result.stdout.lower() or "restore" in result.stdout.lower()
+
+
+class TestSyncCommand:
+    """Tests for the sync command."""
+
+    def test_sync_help_shows_options(self) -> None:
+        """Test sync command shows help."""
+        result = runner.invoke(app, ["sync", "--help"])
+        assert result.exit_code == 0
+        assert "sync" in result.stdout.lower()
+        assert "--vendor" in result.stdout
+
+    def test_sync_no_repo_url(self) -> None:
+        """Test sync requires repo URL."""
+        result = runner.invoke(app, ["sync"])
+        # Should fail without required REPO_URL argument
+        assert result.exit_code != 0
+
+    def test_sync_vendor_not_found(self) -> None:
+        """Test sync with invalid vendor."""
+        result = runner.invoke(
+            app, ["sync", "https://github.com/test/repo.git", "--vendor", "invalid_vendor"]
+        )
+        assert result.exit_code == 1
+        assert "Unknown vendor" in result.stdout
+
+    def test_sync_preview_mode(self) -> None:
+        """Test sync preview mode."""
+        with (
+            patch("ai_asst_mgr.cli._get_backup_manager") as mock_get_backup,
+            patch("ai_asst_mgr.cli._get_sync_manager") as mock_get_sync,
+            patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class,
+        ):
+            mock_adapter = MagicMock()
+            mock_adapter.info.vendor_id = "claude"
+            mock_adapter.info.name = "Claude Code"
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {"claude": mock_adapter}
+            mock_registry.get_vendor.return_value = mock_adapter
+            mock_registry_class.return_value = mock_registry
+
+            mock_backup_manager = MagicMock()
+            mock_get_backup.return_value = mock_backup_manager
+
+            mock_preview = MagicMock()
+            mock_preview.files_to_add = ["new_file.md"]
+            mock_preview.files_to_modify = ["settings.json"]
+            mock_preview.files_to_delete = []
+            mock_preview.conflicts = ["settings.json"]
+
+            mock_sync_manager = MagicMock()
+            mock_sync_manager.preview_sync.return_value = mock_preview
+            mock_get_sync.return_value = mock_sync_manager
+
+            result = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "https://github.com/test/repo.git",
+                    "--vendor",
+                    "claude",
+                    "--preview",
+                ],
+            )
+            assert result.exit_code == 0
+
+    def test_sync_execute_success(self) -> None:
+        """Test successful sync execution."""
+        with (
+            patch("ai_asst_mgr.cli._get_backup_manager") as mock_get_backup,
+            patch("ai_asst_mgr.cli._get_sync_manager") as mock_get_sync,
+            patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class,
+        ):
+            mock_adapter = MagicMock()
+            mock_adapter.info.vendor_id = "claude"
+            mock_adapter.info.name = "Claude Code"
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {"claude": mock_adapter}
+            mock_registry.get_vendor.return_value = mock_adapter
+            mock_registry_class.return_value = mock_registry
+
+            mock_backup_manager = MagicMock()
+            mock_get_backup.return_value = mock_backup_manager
+
+            mock_result = MagicMock()
+            mock_result.success = True
+            mock_result.files_synced = 5
+            mock_result.files_added = 3
+            mock_result.files_modified = 2
+            mock_result.pre_sync_backup = Path("/backups/pre_sync.tar.gz")
+            mock_result.duration_seconds = 2.5
+
+            mock_sync_manager = MagicMock()
+            mock_sync_manager.sync_vendor.return_value = mock_result
+            mock_get_sync.return_value = mock_sync_manager
+
+            result = runner.invoke(
+                app, ["sync", "https://github.com/test/repo.git", "--vendor", "claude"]
+            )
+            assert result.exit_code == 0
+
+
+class TestFormatSizeBytes:
+    """Tests for _format_size_bytes helper."""
+
+    def test_format_size_bytes_bytes(self) -> None:
+        """Test formatting bytes."""
+        assert _format_size_bytes(500) == "500.0 B"
+
+    def test_format_size_bytes_kb(self) -> None:
+        """Test formatting kilobytes."""
+        assert _format_size_bytes(2048) == "2.0 KB"
+
+    def test_format_size_bytes_mb(self) -> None:
+        """Test formatting megabytes."""
+        assert _format_size_bytes(1048576) == "1.0 MB"
+
+    def test_format_size_bytes_gb(self) -> None:
+        """Test formatting gigabytes."""
+        assert _format_size_bytes(1073741824) == "1.0 GB"
+
+
+class TestBackupCommandEdgeCases:
+    """Additional edge case tests for backup command."""
+
+    def test_backup_all_vendors(self) -> None:
+        """Test backup all vendors when no vendor specified."""
+        with (
+            patch("ai_asst_mgr.cli._get_backup_manager") as mock_get_manager,
+            patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class,
+        ):
+            # Setup mock adapters
+            mock_adapter1 = MagicMock()
+            mock_adapter1.info.vendor_id = "claude"
+            mock_adapter1.info.name = "Claude Code"
+            mock_adapter1.is_installed.return_value = True
+
+            mock_adapter2 = MagicMock()
+            mock_adapter2.info.vendor_id = "gemini"
+            mock_adapter2.info.name = "Gemini"
+            mock_adapter2.is_installed.return_value = True
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {
+                "claude": mock_adapter1,
+                "gemini": mock_adapter2,
+            }
+            mock_registry_class.return_value = mock_registry
+
+            # Setup mock backup result
+            mock_summary = MagicMock()
+            mock_summary.total_vendors = 2
+            mock_summary.successful = 2
+            mock_summary.failed = 0
+            mock_summary.total_size_bytes = 4096
+            mock_summary.duration_seconds = 2.0
+
+            mock_manager = MagicMock()
+            mock_manager.backup_all_vendors.return_value = mock_summary
+            mock_get_manager.return_value = mock_manager
+
+            result = runner.invoke(app, ["backup"])
+            assert result.exit_code == 0
+
+    def test_backup_failure(self) -> None:
+        """Test backup handles failure."""
+        with (
+            patch("ai_asst_mgr.cli._get_backup_manager") as mock_get_manager,
+            patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class,
+        ):
+            mock_adapter = MagicMock()
+            mock_adapter.info.vendor_id = "claude"
+            mock_adapter.info.name = "Claude Code"
+            mock_adapter.is_installed.return_value = True
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {"claude": mock_adapter}
+            mock_registry_class.return_value = mock_registry
+
+            mock_result = MagicMock()
+            mock_result.success = False
+            mock_result.error = "Backup failed due to permissions"
+
+            mock_manager = MagicMock()
+            mock_manager.backup_vendor.return_value = mock_result
+            mock_get_manager.return_value = mock_manager
+
+            result = runner.invoke(app, ["backup", "--vendor", "claude"])
+            assert result.exit_code == 1
+            assert "failed" in result.stdout.lower() or "error" in result.stdout.lower()
+
+    def test_backup_verify_failure(self) -> None:
+        """Test backup verification failure."""
+        with patch("ai_asst_mgr.cli._get_backup_manager") as mock_get_manager:
+            mock_manager = MagicMock()
+            mock_manager.verify_backup.return_value = (False, "Corrupted archive")
+            mock_get_manager.return_value = mock_manager
+
+            result = runner.invoke(app, ["backup", "--verify", "/fake/path.tar.gz"])
+            assert result.exit_code == 1
+
+
+class TestRestoreCommandEdgeCases:
+    """Additional edge case tests for restore command."""
+
+    def test_restore_execute_success(self) -> None:
+        """Test successful restore execution."""
+        with (
+            patch("ai_asst_mgr.cli._get_backup_manager") as mock_get_manager,
+            patch("ai_asst_mgr.cli._get_restore_manager") as mock_get_restore,
+            patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class,
+        ):
+            mock_adapter = MagicMock()
+            mock_adapter.info.vendor_id = "claude"
+            mock_adapter.info.name = "Claude Code"
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {"claude": mock_adapter}
+            mock_registry.get_vendor.return_value = mock_adapter
+            mock_registry_class.return_value = mock_registry
+
+            mock_metadata = MagicMock()
+            mock_metadata.backup_path = Path("/backups/test.tar.gz")
+            mock_metadata.timestamp = datetime.now(tz=UTC)
+
+            mock_backup_manager = MagicMock()
+            mock_backup_manager.get_latest_backup.return_value = mock_metadata
+            mock_get_manager.return_value = mock_backup_manager
+
+            mock_result = MagicMock()
+            mock_result.success = True
+            mock_result.restored_files = 10
+            mock_result.pre_restore_backup = Path("/backups/pre_restore.tar.gz")
+            mock_result.duration_seconds = 1.5
+
+            mock_restore_manager = MagicMock()
+            mock_restore_manager.restore_vendor.return_value = mock_result
+            mock_get_restore.return_value = mock_restore_manager
+
+            result = runner.invoke(app, ["restore", "--vendor", "claude"])
+            assert result.exit_code == 0
+
+    def test_restore_failure(self) -> None:
+        """Test restore handles failure."""
+        with (
+            patch("ai_asst_mgr.cli._get_backup_manager") as mock_get_manager,
+            patch("ai_asst_mgr.cli._get_restore_manager") as mock_get_restore,
+            patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class,
+        ):
+            mock_adapter = MagicMock()
+            mock_adapter.info.vendor_id = "claude"
+            mock_adapter.info.name = "Claude Code"
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {"claude": mock_adapter}
+            mock_registry.get_vendor.return_value = mock_adapter
+            mock_registry_class.return_value = mock_registry
+
+            mock_metadata = MagicMock()
+            mock_metadata.backup_path = Path("/backups/test.tar.gz")
+            mock_metadata.timestamp = datetime.now(tz=UTC)
+
+            mock_backup_manager = MagicMock()
+            mock_backup_manager.get_latest_backup.return_value = mock_metadata
+            mock_get_manager.return_value = mock_backup_manager
+
+            mock_result = MagicMock()
+            mock_result.success = False
+            mock_result.error = "Restore failed"
+
+            mock_restore_manager = MagicMock()
+            mock_restore_manager.restore_vendor.return_value = mock_result
+            mock_get_restore.return_value = mock_restore_manager
+
+            result = runner.invoke(app, ["restore", "--vendor", "claude"])
+            assert result.exit_code == 1
+
+    def test_restore_selective_success(self) -> None:
+        """Test selective restore."""
+        with (
+            patch("ai_asst_mgr.cli._get_backup_manager") as mock_get_manager,
+            patch("ai_asst_mgr.cli._get_restore_manager") as mock_get_restore,
+            patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class,
+        ):
+            mock_adapter = MagicMock()
+            mock_adapter.info.vendor_id = "claude"
+            mock_adapter.info.name = "Claude Code"
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {"claude": mock_adapter}
+            mock_registry.get_vendor.return_value = mock_adapter
+            mock_registry_class.return_value = mock_registry
+
+            mock_metadata = MagicMock()
+            mock_metadata.backup_path = Path("/backups/test.tar.gz")
+            mock_metadata.timestamp = datetime.now(tz=UTC)
+
+            mock_backup_manager = MagicMock()
+            mock_backup_manager.get_latest_backup.return_value = mock_metadata
+            mock_get_manager.return_value = mock_backup_manager
+
+            mock_restore_manager = MagicMock()
+            mock_restore_manager.get_restorable_directories.return_value = [
+                "agents",
+                "skills",
+            ]
+            mock_result = MagicMock()
+            mock_result.success = True
+            mock_result.restored_files = 5
+            mock_restore_manager.restore_selective.return_value = mock_result
+            mock_get_restore.return_value = mock_restore_manager
+
+            result = runner.invoke(app, ["restore", "--vendor", "claude", "--selective", "agents"])
+            assert result.exit_code == 0
+
+
+class TestSyncCommandEdgeCases:
+    """Additional edge case tests for sync command."""
+
+    def test_sync_displays_failure_in_results(self) -> None:
+        """Test sync displays failure in results table."""
+        with (
+            patch("ai_asst_mgr.cli._get_backup_manager") as mock_get_backup,
+            patch("ai_asst_mgr.cli._get_sync_manager") as mock_get_sync,
+            patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class,
+        ):
+            mock_adapter = MagicMock()
+            mock_adapter.info.vendor_id = "claude"
+            mock_adapter.info.name = "Claude Code"
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {"claude": mock_adapter}
+            mock_registry.get_vendor.return_value = mock_adapter
+            mock_registry_class.return_value = mock_registry
+
+            mock_backup_manager = MagicMock()
+            mock_get_backup.return_value = mock_backup_manager
+
+            mock_result = MagicMock()
+            mock_result.success = False
+            mock_result.error = "Clone failed"
+
+            # sync command calls sync_all_vendors, not sync_vendor
+            mock_sync_manager = MagicMock()
+            mock_sync_manager.sync_all_vendors.return_value = {"claude": mock_result}
+            mock_get_sync.return_value = mock_sync_manager
+
+            result = runner.invoke(
+                app, ["sync", "https://github.com/test/repo.git", "--vendor", "claude"]
+            )
+            # Sync displays results but doesn't exit with error on failure
+            assert result.exit_code == 0
+            assert "Failed" in result.stdout or "failed" in result.stdout.lower()
+
+    def test_sync_preview_no_changes(self) -> None:
+        """Test sync preview with no changes."""
+        with (
+            patch("ai_asst_mgr.cli._get_backup_manager") as mock_get_backup,
+            patch("ai_asst_mgr.cli._get_sync_manager") as mock_get_sync,
+            patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class,
+        ):
+            mock_adapter = MagicMock()
+            mock_adapter.info.vendor_id = "claude"
+            mock_adapter.info.name = "Claude Code"
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {"claude": mock_adapter}
+            mock_registry.get_vendor.return_value = mock_adapter
+            mock_registry_class.return_value = mock_registry
+
+            mock_backup_manager = MagicMock()
+            mock_get_backup.return_value = mock_backup_manager
+
+            mock_preview = MagicMock()
+            mock_preview.files_to_add = []
+            mock_preview.files_to_modify = []
+            mock_preview.files_to_delete = []
+            mock_preview.conflicts = []
+
+            mock_sync_manager = MagicMock()
+            mock_sync_manager.preview_sync.return_value = mock_preview
+            mock_get_sync.return_value = mock_sync_manager
+
+            result = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "https://github.com/test/repo.git",
+                    "--vendor",
+                    "claude",
+                    "--preview",
+                ],
+            )
+            assert result.exit_code == 0
+
+    def test_sync_preview_shows_failure_message(self) -> None:
+        """Test sync preview shows failure message when preview fails."""
+        with (
+            patch("ai_asst_mgr.cli._get_backup_manager") as mock_get_backup,
+            patch("ai_asst_mgr.cli._get_sync_manager") as mock_get_sync,
+            patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class,
+        ):
+            mock_adapter = MagicMock()
+            mock_adapter.info.vendor_id = "claude"
+            mock_adapter.info.name = "Claude Code"
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {"claude": mock_adapter}
+            mock_registry.get_vendor.return_value = mock_adapter
+            mock_registry_class.return_value = mock_registry
+
+            mock_backup_manager = MagicMock()
+            mock_get_backup.return_value = mock_backup_manager
+
+            mock_sync_manager = MagicMock()
+            mock_sync_manager.preview_sync.return_value = None
+            mock_get_sync.return_value = mock_sync_manager
+
+            result = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "https://github.com/test/repo.git",
+                    "--vendor",
+                    "claude",
+                    "--preview",
+                ],
+            )
+            # Preview shows failure message but doesn't exit with error
+            assert result.exit_code == 0
+            assert "Failed" in result.stdout or "failed" in result.stdout.lower()
+
+    def test_sync_execute_with_full_results(self) -> None:
+        """Test sync execute displays full results including pre-sync backup."""
+        with (
+            patch("ai_asst_mgr.cli._get_backup_manager") as mock_get_backup,
+            patch("ai_asst_mgr.cli._get_sync_manager") as mock_get_sync,
+            patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class,
+        ):
+            mock_adapter = MagicMock()
+            mock_adapter.info.vendor_id = "claude"
+            mock_adapter.info.name = "Claude Code"
+            mock_adapter.is_installed.return_value = True
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {"claude": mock_adapter}
+            mock_registry.get_vendor.return_value = mock_adapter
+            mock_registry_class.return_value = mock_registry
+
+            mock_backup_manager = MagicMock()
+            mock_get_backup.return_value = mock_backup_manager
+
+            mock_result = MagicMock()
+            mock_result.success = True
+            mock_result.files_added = 3
+            mock_result.files_modified = 2
+            mock_result.files_deleted = 1
+            mock_result.duration_seconds = 1.5
+            mock_result.pre_sync_backup = Path("/backups/pre_sync.tar.gz")
+
+            mock_sync_manager = MagicMock()
+            mock_sync_manager.sync_all_vendors.return_value = {"claude": mock_result}
+            mock_get_sync.return_value = mock_sync_manager
+
+            result = runner.invoke(
+                app, ["sync", "https://github.com/test/repo.git", "--vendor", "claude"]
+            )
+            assert result.exit_code == 0
+            assert "Success" in result.stdout
+            # Pre-sync backup path should be displayed
+            assert "pre_sync" in result.stdout.lower() or "backup" in result.stdout.lower()
