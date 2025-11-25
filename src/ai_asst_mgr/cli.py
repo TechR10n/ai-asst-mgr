@@ -19,6 +19,7 @@ from rich.table import Table
 from rich.text import Text
 
 from ai_asst_mgr.adapters.base import VendorStatus
+from ai_asst_mgr.audit import ClaudeAuditor, CodexAuditor, GeminiAuditor
 from ai_asst_mgr.capabilities import AgentType, UniversalAgentManager
 from ai_asst_mgr.coaches import ClaudeCoach, CodexCoach, GeminiCoach, Priority
 from ai_asst_mgr.operations import (
@@ -2290,6 +2291,297 @@ def _sync_execute(
         f"\n[bold]Summary:[/bold] {successful}/{len(results)} succeeded, "
         f"+{total_added} ~{total_modified} -{total_deleted} files"
     )
+
+
+# ============================================================================
+# Audit Command
+# ============================================================================
+
+# Score thresholds for audit display
+AUDIT_SCORE_GOOD = 80
+AUDIT_SCORE_WARNING = 60
+
+# Severity and category filter values
+VALID_SEVERITIES = ["info", "warning", "error", "critical"]
+VALID_CATEGORIES = ["security", "config", "quality", "usage"]
+SEVERITY_ORDER = {"info": 0, "warning": 1, "error": 2, "critical": 3}
+
+
+def _get_severity_style(severity_value: str) -> str:
+    """Get Rich style for severity level.
+
+    Args:
+        severity_value: The severity value string.
+
+    Returns:
+        Rich style string with color.
+    """
+    styles = {
+        "critical": "[bold red]CRITICAL[/bold red]",
+        "error": "[red]ERROR[/red]",
+        "warning": "[yellow]WARNING[/yellow]",
+        "info": "[dim]INFO[/dim]",
+    }
+    return styles.get(severity_value, severity_value)
+
+
+def _get_category_style(category_value: str) -> str:
+    """Get Rich style for category.
+
+    Args:
+        category_value: The category value string.
+
+    Returns:
+        Rich style string with color.
+    """
+    styles = {
+        "security": "[cyan]security[/cyan]",
+        "config": "[blue]config[/blue]",
+        "quality": "[magenta]quality[/magenta]",
+        "usage": "[green]usage[/green]",
+    }
+    return styles.get(category_value, category_value)
+
+
+def _run_vendor_audit(vendor_id: str, config_dir: Path) -> dict[str, Any]:
+    """Run audit for a specific vendor.
+
+    Args:
+        vendor_id: The vendor identifier.
+        config_dir: Path to vendor config directory.
+
+    Returns:
+        Audit report as dictionary.
+    """
+    auditor_classes: dict[str, type[ClaudeAuditor] | type[GeminiAuditor] | type[CodexAuditor]] = {
+        "claude": ClaudeAuditor,
+        "gemini": GeminiAuditor,
+        "openai": CodexAuditor,
+    }
+
+    auditor_class = auditor_classes.get(vendor_id)
+    if not auditor_class:
+        return {"vendor_id": vendor_id, "error": f"Unknown vendor: {vendor_id}"}
+
+    auditor = auditor_class(config_dir)
+    report = auditor.run_audit()
+    return report.to_dict()
+
+
+def _validate_audit_filter(value: str | None, valid_options: list[str], filter_name: str) -> None:
+    """Validate an audit filter value.
+
+    Args:
+        value: The filter value to validate.
+        valid_options: List of valid option values.
+        filter_name: Name of the filter for error messages.
+
+    Raises:
+        typer.Exit: If the value is invalid.
+    """
+    if value and value.lower() not in valid_options:
+        console.print(f"[red]Error: Invalid {filter_name} '{value}'[/red]")
+        console.print(f"[yellow]Valid {filter_name} values: {', '.join(valid_options)}[/yellow]")
+        raise typer.Exit(code=1)
+
+
+def _get_vendors_to_audit(registry: VendorRegistry, vendor: str | None) -> dict[str, VendorAdapter]:
+    """Get the vendors to audit.
+
+    Args:
+        registry: The vendor registry.
+        vendor: Optional specific vendor to audit.
+
+    Returns:
+        Dictionary of vendor_id to VendorAdapter.
+
+    Raises:
+        typer.Exit: If the specified vendor is not found.
+    """
+    if vendor:
+        try:
+            return {vendor: registry.get_vendor(vendor)}
+        except KeyError:
+            console.print(f"[red]Error: Unknown vendor '{vendor}'[/red]")
+            available = ", ".join(registry.get_all_vendors().keys())
+            console.print(f"[yellow]Available vendors: {available}[/yellow]")
+            raise typer.Exit(code=1) from None
+    return registry.get_all_vendors()
+
+
+def _filter_audit_checks(
+    checks: list[dict[str, Any]],
+    min_severity: int,
+    category: str | None,
+    failed_only: bool,
+) -> list[dict[str, Any]]:
+    """Filter audit checks based on criteria.
+
+    Args:
+        checks: List of check dictionaries.
+        min_severity: Minimum severity level (0-3).
+        category: Optional category to filter by.
+        failed_only: If True, only include failed checks.
+
+    Returns:
+        Filtered list of checks.
+    """
+    filtered = []
+    for check in checks:
+        check_severity = SEVERITY_ORDER.get(check.get("severity", "info"), 0)
+        if check_severity < min_severity:
+            continue
+        if category and check.get("category", "") != category.lower():
+            continue
+        if failed_only and check.get("passed", True):
+            continue
+        filtered.append(check)
+    return filtered
+
+
+def _get_score_style(score: float) -> str:
+    """Get Rich style color for audit score.
+
+    Args:
+        score: The audit score (0-100).
+
+    Returns:
+        Rich style string.
+    """
+    if score >= AUDIT_SCORE_GOOD:
+        return "[green]"
+    if score >= AUDIT_SCORE_WARNING:
+        return "[yellow]"
+    return "[red]"
+
+
+def _display_vendor_checks(filtered_checks: list[dict[str, Any]], failed_only: bool) -> None:
+    """Display filtered checks for a vendor.
+
+    Args:
+        filtered_checks: List of filtered check dictionaries.
+        failed_only: Whether we're showing failed-only mode.
+    """
+    if not filtered_checks:
+        if failed_only:
+            console.print("  [green]✓ All checks passed[/green]")
+        else:
+            console.print("  [dim]No checks match the filter criteria[/dim]")
+        return
+
+    table = Table(show_header=True, header_style="bold", box=None, padding=(0, 1))
+    table.add_column("Status", width=6)
+    table.add_column("Severity", width=10)
+    table.add_column("Category", width=10)
+    table.add_column("Check", width=25)
+    table.add_column("Message", width=40)
+
+    for check in filtered_checks:
+        status = "[green]✓[/green]" if check.get("passed") else "[red]✗[/red]"
+        sev = _get_severity_style(check.get("severity", "info"))
+        cat = _get_category_style(check.get("category", ""))
+        name = check.get("name", "")[:25]
+        message = check.get("message", "")[:40]
+
+        table.add_row(status, sev, cat, name, message)
+
+        if not check.get("passed") and check.get("recommendation"):
+            console.print(f"      [dim]→ {check.get('recommendation')}[/dim]")
+
+    console.print(table)
+
+
+@app.command()
+def audit(
+    vendor: Annotated[
+        str | None,
+        typer.Option("--vendor", "-v", help="Audit specific vendor only"),
+    ] = None,
+    severity: Annotated[
+        str | None,
+        typer.Option(
+            "--severity", "-s", help="Filter by minimum severity (info, warning, error, critical)"
+        ),
+    ] = None,
+    category: Annotated[
+        str | None,
+        typer.Option(
+            "--category", "-c", help="Filter by category (security, config, quality, usage)"
+        ),
+    ] = None,
+    output_json: Annotated[
+        bool,
+        typer.Option("--json", help="Output results as JSON"),
+    ] = False,
+    failed_only: Annotated[
+        bool,
+        typer.Option("--failed", "-f", help="Show only failed checks"),
+    ] = False,
+) -> None:
+    """Run security and configuration audits for AI assistants.
+
+    Performs comprehensive audits including:
+    - Security checks (permissions, API key exposure, sensitive files)
+    - Configuration validity (JSON syntax, required files)
+    - Quality assessment (documentation, completeness)
+    - Usage patterns (file sizes, duplicates)
+
+    Examples:
+        ai-asst-mgr audit                        # Audit all vendors
+        ai-asst-mgr audit --vendor claude        # Audit Claude only
+        ai-asst-mgr audit --severity warning     # Show warnings and above
+        ai-asst-mgr audit --category security    # Security checks only
+        ai-asst-mgr audit --json                 # Output as JSON
+        ai-asst-mgr audit --failed               # Show only failed checks
+    """
+    _validate_audit_filter(severity, VALID_SEVERITIES, "severity")
+    _validate_audit_filter(category, VALID_CATEGORIES, "category")
+
+    registry = VendorRegistry()
+    vendors_to_audit = _get_vendors_to_audit(registry, vendor)
+
+    all_reports = [
+        _run_vendor_audit(vid, adapter.info.config_dir) for vid, adapter in vendors_to_audit.items()
+    ]
+
+    if output_json:
+        console.print(json.dumps(all_reports, indent=2))
+        return
+
+    console.print(
+        Panel.fit("[bold blue]AI Assistant Configuration Audit[/bold blue]", border_style="blue")
+    )
+
+    min_severity = SEVERITY_ORDER.get(severity.lower() if severity else "info", 0)
+    total_passed, total_failed, has_critical = 0, 0, False
+
+    for report in all_reports:
+        summary = report.get("summary", {})
+        total_passed += summary.get("passed", 0)
+        total_failed += summary.get("failed", 0)
+        has_critical = has_critical or summary.get("by_severity", {}).get("critical", 0) > 0
+
+        score = summary.get("score", 0)
+        score_style = _get_score_style(score)
+        vid = report.get("vendor_id", "unknown")
+        console.print(
+            f"\n[bold cyan]{vid.capitalize()}[/bold cyan] - "
+            f"Score: {score_style}{score:.1f}%[/{score_style.split('[')[1]}"
+        )
+
+        filtered = _filter_audit_checks(
+            report.get("checks", []), min_severity, category, failed_only
+        )
+        _display_vendor_checks(filtered, failed_only)
+
+    console.print(f"\n[bold]Summary:[/bold] {total_passed} passed, {total_failed} failed")
+
+    if has_critical:
+        console.print("[bold red]⚠ Critical issues found! Please address immediately.[/bold red]")
+        raise typer.Exit(code=2)
+
+    if total_failed > 0:
+        raise typer.Exit(code=1)
 
 
 # ============================================================================

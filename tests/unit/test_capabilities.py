@@ -1011,3 +1011,119 @@ class TestVendorConfigDirectories:
         config_dir = Path("/test")
         result = manager._get_agent_directory(config_dir, "gemini", AgentType.AGENT)
         assert result is None
+
+
+class TestVendorAgentExtraction:
+    """Tests for vendor-specific agent extraction methods."""
+
+    def test_get_agents_for_vendor_claude(self) -> None:
+        """Test _get_agents_for_vendor dispatches to Claude method."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            agents_dir = temp_path / "agents"
+            agents_dir.mkdir()
+            (agents_dir / "test.md").write_text("# Test Agent")
+
+            # Create mock adapter with config_dir
+            mock_adapter = MagicMock()
+            mock_adapter.info.config_dir = temp_path
+
+            manager = UniversalAgentManager({"claude": mock_adapter})
+            agents = manager._get_agents_for_vendor("claude", mock_adapter)
+
+            assert len(agents) >= 1
+            assert any(a.name == "test" for a in agents)
+
+    def test_get_agents_for_vendor_gemini(self) -> None:
+        """Test _get_agents_for_vendor dispatches to Gemini method."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            mcp_dir = temp_path / "mcp_servers"
+            mcp_dir.mkdir()
+            (mcp_dir / "test.json").write_text('{"name": "test"}')
+
+            mock_adapter = MagicMock()
+            mock_adapter.info.config_dir = temp_path
+
+            manager = UniversalAgentManager({"gemini": mock_adapter})
+            agents = manager._get_agents_for_vendor("gemini", mock_adapter)
+
+            assert len(agents) >= 1
+            assert any(a.name == "test" for a in agents)
+
+    def test_get_agents_for_vendor_openai(self) -> None:
+        """Test _get_agents_for_vendor dispatches to OpenAI method."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            # OpenAI uses AGENTS.md and/or mcp_servers
+            agents_md = temp_path / "AGENTS.md"
+            agents_md.write_text("# OpenAI Agents")
+
+            mock_adapter = MagicMock()
+            mock_adapter.info.config_dir = temp_path
+
+            manager = UniversalAgentManager({"openai": mock_adapter})
+            agents = manager._get_agents_for_vendor("openai", mock_adapter)
+
+            assert len(agents) >= 1
+
+    def test_get_agents_for_vendor_unknown(self) -> None:
+        """Test _get_agents_for_vendor returns empty for unknown vendor."""
+        mock_adapter = MagicMock()
+        manager = UniversalAgentManager({"unknown": mock_adapter})
+        agents = manager._get_agents_for_vendor("unknown", mock_adapter)
+
+        assert agents == []
+
+    def test_get_claude_agents_with_both_dirs(self) -> None:
+        """Test _get_claude_agents finds agents and skills."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            agents_dir = temp_path / "agents"
+            skills_dir = temp_path / "skills"
+            agents_dir.mkdir()
+            skills_dir.mkdir()
+
+            (agents_dir / "agent1.md").write_text("# Agent 1")
+            (skills_dir / "skill1.md").write_text("# Skill 1")
+
+            mock_adapter = MagicMock()
+            mock_adapter.info.config_dir = temp_path
+
+            manager = UniversalAgentManager({"claude": mock_adapter})
+            agents = manager._get_claude_agents(mock_adapter)
+
+            assert len(agents) == 2
+            types = {a.agent_type for a in agents}
+            assert AgentType.AGENT in types
+            assert AgentType.SKILL in types
+
+    def test_get_gemini_agents_no_mcp_dir(self) -> None:
+        """Test _get_gemini_agents with no mcp_servers directory."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+
+            mock_adapter = MagicMock()
+            mock_adapter.info.config_dir = temp_path
+
+            manager = UniversalAgentManager({"gemini": mock_adapter})
+            agents = manager._get_gemini_agents(mock_adapter)
+
+            assert agents == []
+
+    def test_get_openai_agents_with_mcp_servers(self) -> None:
+        """Test _get_openai_agents finds MCP servers."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            mcp_dir = temp_path / "mcp_servers"
+            mcp_dir.mkdir()
+            (mcp_dir / "server.json").write_text('{"name": "server"}')
+
+            mock_adapter = MagicMock()
+            mock_adapter.info.config_dir = temp_path
+
+            manager = UniversalAgentManager({"openai": mock_adapter})
+            agents = manager._get_openai_agents(mock_adapter)
+
+            assert len(agents) == 1
+            assert agents[0].agent_type == AgentType.MCP_SERVER
