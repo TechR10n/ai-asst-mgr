@@ -383,7 +383,7 @@ class TestCLIServeCommand:
         from ai_asst_mgr.cli import app
 
         runner = CliRunner()
-        result = runner.invoke(app, ["serve", "--help"])
+        result = runner.invoke(app, ["serve", "--help"], color=False)
         assert result.exit_code == 0
         assert "Start the web dashboard server" in result.output
 
@@ -394,7 +394,7 @@ class TestCLIServeCommand:
         from ai_asst_mgr.cli import app
 
         runner = CliRunner()
-        result = runner.invoke(app, ["serve", "--help"])
+        result = runner.invoke(app, ["serve", "--help"], color=False)
         assert "--host" in result.output
 
     def test_serve_command_has_port_option(self) -> None:
@@ -404,7 +404,7 @@ class TestCLIServeCommand:
         from ai_asst_mgr.cli import app
 
         runner = CliRunner()
-        result = runner.invoke(app, ["serve", "--help"])
+        result = runner.invoke(app, ["serve", "--help"], color=False)
         assert "--port" in result.output
 
     def test_serve_command_has_reload_option(self) -> None:
@@ -414,5 +414,5 @@ class TestCLIServeCommand:
         from ai_asst_mgr.cli import app
 
         runner = CliRunner()
-        result = runner.invoke(app, ["serve", "--help"])
+        result = runner.invoke(app, ["serve", "--help"], color=False)
         assert "--reload" in result.output
