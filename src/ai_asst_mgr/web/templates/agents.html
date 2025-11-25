@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+
+{% block title %}Agents - AI Assistant Manager{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Agents</h1>
+    <p>Browse AI agents across all vendors</p>
+</div>
+
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-value">{{ data.total_agents }}</div>
+        <div class="stat-label">Total Agents</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">{{ data.agents_by_vendor | length }}</div>
+        <div class="stat-label">Vendors</div>
+    </div>
+</div>
+
+{% for vendor_id, agents in data.agents_by_vendor.items() %}
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">{{ vendor_id | title }}</h2>
+        <span class="badge badge-success">{{ agents | length }} agent{% if agents | length != 1 %}s{% endif %}</span>
+    </div>
+
+    {% if agents %}
+    <div class="agents-grid">
+        {% for agent in agents %}
+        <div class="agent-card">
+            <h3>{{ agent.name }}</h3>
+            <div class="agent-vendor">{{ agent.vendor }}</div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p style="color: var(--text-muted);">No agents configured for this vendor.</p>
+    {% endif %}
+</div>
+{% else %}
+<div class="card">
+    <p style="color: var(--text-muted);">No vendors installed. Use <code>ai-asst-mgr init</code> to get started.</p>
+</div>
+{% endfor %}
+
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Manage Agents</h2>
+    </div>
+    <p>Use the CLI to manage agents:</p>
+    <ul style="margin-top: 1rem; margin-left: 1.5rem;">
+        <li><code>ai-asst-mgr agents list</code> - List all agents</li>
+        <li><code>ai-asst-mgr agents list --vendor claude</code> - List agents for a specific vendor</li>
+        <li><code>ai-asst-mgr agents show &lt;agent-name&gt;</code> - Show agent details</li>
+    </ul>
+</div>
+{% endblock %}

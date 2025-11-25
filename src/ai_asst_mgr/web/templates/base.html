@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}AI Assistant Manager{% endblock %}</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-brand">
+            <a href="/">AI Assistant Manager</a>
+        </div>
+        <ul class="nav-links">
+            <li><a href="/" class="{% if request.url.path == '/' %}active{% endif %}">Dashboard</a></li>
+            <li><a href="/agents" class="{% if request.url.path == '/agents' %}active{% endif %}">Agents</a></li>
+            <li><a href="/review" class="{% if request.url.path == '/review' %}active{% endif %}">Weekly Review</a></li>
+        </ul>
+    </nav>
+
+    <main class="container">
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="footer">
+        <p>AI Assistant Manager v0.1.0</p>
+    </footer>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>
