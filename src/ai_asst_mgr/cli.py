@@ -20,9 +20,17 @@ from rich.text import Text
 
 from ai_asst_mgr.adapters.base import VendorStatus
 from ai_asst_mgr.coaches import ClaudeCoach, CodexCoach, GeminiCoach, Priority
+from ai_asst_mgr.operations import (
+    BackupManager,
+    MergeStrategy,
+    RestoreManager,
+    SyncManager,
+)
 from ai_asst_mgr.vendors import VendorRegistry
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from ai_asst_mgr.adapters.base import VendorAdapter
     from ai_asst_mgr.coaches.base import CoachBase
 
@@ -244,7 +252,7 @@ def config(
 
     # If value is provided, set the config
     if value is not None:
-        _config_set_value(vendors_to_use, key, value, vendor)
+        _config_set_value(vendors_to_use, key, value)
     else:
         # Get the config value
         _config_get_value(vendors_to_use, key, vendor)
@@ -1119,15 +1127,13 @@ def _config_set_value(
     vendors: dict[str, VendorAdapter],
     key: str,
     value: str,
-    vendor_name: str | None,  # noqa: ARG001
 ) -> None:
     """Set a configuration value.
 
     Args:
-        vendors: Dictionary of vendor name to adapter mappings.
+        vendors: Dictionary of vendor name to adapter mappings (pre-filtered by caller).
         key: Configuration key to set.
         value: Value to set.
-        vendor_name: Optional vendor name (if specified, only set for that vendor).
     """
     # Parse value - try to convert to appropriate type
     parsed_value = _parse_config_value(value)
@@ -1501,6 +1507,788 @@ def coach(
         # Add spacing between vendors
         if len(coaches_to_analyze) > 1:
             console.print("\n" + "=" * 60 + "\n")
+
+
+# ============================================================================
+# Backup/Restore/Sync Commands
+# ============================================================================
+
+DEFAULT_BACKUP_DIR = Path.home() / ".config" / "ai-asst-mgr" / "backups"
+
+
+def _get_backup_manager(backup_dir: Path | None = None) -> BackupManager:
+    """Get backup manager instance.
+
+    Args:
+        backup_dir: Optional backup directory. Uses default if not provided.
+
+    Returns:
+        BackupManager instance.
+    """
+    return BackupManager(backup_dir or DEFAULT_BACKUP_DIR)
+
+
+def _get_restore_manager(backup_dir: Path | None = None) -> RestoreManager:
+    """Get restore manager instance.
+
+    Args:
+        backup_dir: Optional backup directory. Uses default if not provided.
+
+    Returns:
+        RestoreManager instance.
+    """
+    backup_manager = _get_backup_manager(backup_dir)
+    return RestoreManager(backup_manager)
+
+
+def _get_sync_manager(backup_dir: Path | None = None) -> SyncManager:
+    """Get sync manager instance.
+
+    Args:
+        backup_dir: Optional backup directory for pre-sync backups.
+
+    Returns:
+        SyncManager instance.
+    """
+    backup_manager = _get_backup_manager(backup_dir)
+    return SyncManager(backup_manager)
+
+
+_BYTES_PER_UNIT = 1024
+_MAX_PREVIEW_FILES = 5
+_MAX_SYNC_PREVIEW_FILES = 3
+
+
+def _format_size_bytes(size_bytes: int) -> str:
+    """Format size in bytes to human-readable string.
+
+    Args:
+        size_bytes: Size in bytes.
+
+    Returns:
+        Human-readable size string.
+    """
+    size: float = float(size_bytes)
+    for unit in ["B", "KB", "MB", "GB"]:
+        if size < _BYTES_PER_UNIT:
+            return f"{size:.1f} {unit}"
+        size /= _BYTES_PER_UNIT
+    return f"{size:.1f} TB"
+
+
+@app.command()
+def backup(
+    vendor: Annotated[
+        str | None,
+        typer.Option("--vendor", "-v", help="Backup specific vendor only"),
+    ] = None,
+    backup_dir: Annotated[
+        Path | None,
+        typer.Option("--backup-dir", "-d", help="Directory to store backups"),
+    ] = None,
+    list_backups: Annotated[
+        bool,
+        typer.Option("--list", "-l", help="List existing backups"),
+    ] = False,
+    verify: Annotated[
+        Path | None,
+        typer.Option("--verify", help="Verify integrity of a backup file"),
+    ] = None,
+) -> None:
+    """Backup AI assistant vendor configurations.
+
+    Creates compressed archives of vendor configuration directories with
+    checksum verification and retention policies.
+
+    Examples:
+        ai-asst-mgr backup                    # Backup all vendors
+        ai-asst-mgr backup --vendor claude    # Backup Claude only
+        ai-asst-mgr backup --list             # List all backups
+        ai-asst-mgr backup --verify path.tar.gz  # Verify backup integrity
+
+    Args:
+        vendor: Optional vendor name to backup. If not provided, backs up all.
+        backup_dir: Directory to store backups. Uses default if not provided.
+        list_backups: If True, lists existing backups instead of creating new ones.
+        verify: Path to backup file to verify.
+    """
+    registry = VendorRegistry()
+    backup_manager = _get_backup_manager(backup_dir)
+
+    # Handle --verify
+    if verify:
+        _backup_verify(backup_manager, verify)
+        return
+
+    # Handle --list
+    if list_backups:
+        _backup_list(backup_manager, vendor)
+        return
+
+    # Create backup(s)
+    _backup_create(registry, backup_manager, vendor)
+
+
+def _backup_verify(backup_manager: BackupManager, backup_path: Path) -> None:
+    """Verify backup integrity.
+
+    Args:
+        backup_manager: BackupManager instance.
+        backup_path: Path to backup file.
+    """
+    console.print(f"Verifying backup: {backup_path}")
+
+    is_valid, message = backup_manager.verify_backup(backup_path)
+
+    if is_valid:
+        console.print(f"[green]✓ {message}[/green]")
+    else:
+        console.print(f"[red]✗ {message}[/red]")
+        raise typer.Exit(code=1)
+
+
+def _backup_list(backup_manager: BackupManager, vendor: str | None) -> None:
+    """List existing backups.
+
+    Args:
+        backup_manager: BackupManager instance.
+        vendor: Optional vendor to filter by.
+    """
+    backups = backup_manager.list_backups(vendor)
+
+    if not backups:
+        console.print("[yellow]No backups found[/yellow]")
+        return
+
+    table = Table(title="Available Backups", show_header=True, header_style="bold cyan")
+    table.add_column("Vendor", style="bold", width=12)
+    table.add_column("Timestamp", width=20)
+    table.add_column("Size", width=10)
+    table.add_column("Files", width=8)
+    table.add_column("Path", style="dim", width=40)
+
+    for bkp in backups:
+        table.add_row(
+            bkp.vendor_id.capitalize(),
+            bkp.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+            _format_size_bytes(bkp.size_bytes),
+            str(bkp.file_count),
+            str(bkp.backup_path),
+        )
+
+    console.print(table)
+    console.print(f"\n[bold]Total:[/bold] {len(backups)} backup(s)")
+
+
+def _backup_create(
+    registry: VendorRegistry,
+    backup_manager: BackupManager,
+    vendor: str | None,
+) -> None:
+    """Create backup(s).
+
+    Args:
+        registry: VendorRegistry instance.
+        backup_manager: BackupManager instance.
+        vendor: Optional vendor to backup.
+    """
+
+    def progress_callback(msg: str) -> None:
+        console.print(f"  {msg}")
+
+    if vendor:
+        # Single vendor backup
+        try:
+            adapter = registry.get_vendor(vendor)
+        except KeyError:
+            console.print(f"[red]Error: Unknown vendor '{vendor}'[/red]")
+            available = ", ".join(registry.get_all_vendors().keys())
+            console.print(f"[yellow]Available vendors: {available}[/yellow]")
+            raise typer.Exit(code=1) from None
+
+        console.print(f"\n[bold]Backing up {adapter.info.name}...[/bold]")
+        result = backup_manager.backup_vendor(adapter, progress_callback)
+
+        if result.success and result.metadata:
+            console.print("\n[green]✓ Backup created successfully[/green]")
+            console.print(f"  Path: {result.metadata.backup_path}")
+            console.print(f"  Size: {_format_size_bytes(result.metadata.size_bytes)}")
+            console.print(f"  Files: {result.metadata.file_count}")
+        else:
+            console.print(f"\n[red]✗ Backup failed: {result.error}[/red]")
+            raise typer.Exit(code=1)
+    else:
+        # All vendors backup
+        console.print(
+            Panel.fit("[bold blue]Backing Up All Vendors[/bold blue]", border_style="blue")
+        )
+
+        installed = registry.get_installed_vendors()
+        if not installed:
+            console.print("[yellow]No installed vendors found to backup[/yellow]")
+            return
+
+        summary = backup_manager.backup_all_vendors(installed, progress_callback)
+
+        # Display summary table
+        table = Table(title="Backup Summary", show_header=True, header_style="bold")
+        table.add_column("Vendor", width=15)
+        table.add_column("Status", width=12)
+        table.add_column("Size", width=12)
+        table.add_column("Details", width=40)
+
+        for vendor_id, result in summary.results.items():
+            if result.success and result.metadata:
+                table.add_row(
+                    vendor_id.capitalize(),
+                    "[green]Success[/green]",
+                    _format_size_bytes(result.metadata.size_bytes),
+                    str(result.metadata.backup_path.name),
+                )
+            else:
+                table.add_row(
+                    vendor_id.capitalize(),
+                    "[red]Failed[/red]",
+                    "-",
+                    result.error or "Unknown error",
+                )
+
+        console.print(table)
+        console.print(
+            f"\n[bold]Summary:[/bold] {summary.successful}/{summary.total_vendors} succeeded, "
+            f"{_format_size_bytes(summary.total_size_bytes)} total"
+        )
+
+
+@app.command()
+def restore(
+    backup_path: Annotated[
+        Path | None,
+        typer.Argument(help="Path to backup file to restore"),
+    ] = None,
+    vendor: Annotated[
+        str | None,
+        typer.Option("--vendor", "-v", help="Restore specific vendor (uses latest backup)"),
+    ] = None,
+    backup_dir: Annotated[
+        Path | None,
+        typer.Option("--backup-dir", "-d", help="Directory containing backups"),
+    ] = None,
+    preview: Annotated[
+        bool,
+        typer.Option("--preview", "-p", help="Preview restore without making changes"),
+    ] = False,
+    selective: Annotated[
+        str | None,
+        typer.Option(
+            "--selective", "-s", help="Restore only specific directories (comma-separated)"
+        ),
+    ] = None,
+    no_backup: Annotated[
+        bool,
+        typer.Option("--no-backup", help="Skip creating pre-restore backup"),
+    ] = False,
+) -> None:
+    """Restore AI assistant configurations from backup.
+
+    Restores vendor configuration directories from backup archives with
+    optional pre-restore backup for rollback capability.
+
+    Examples:
+        ai-asst-mgr restore backup.tar.gz           # Restore from specific file
+        ai-asst-mgr restore --vendor claude         # Restore latest Claude backup
+        ai-asst-mgr restore backup.tar.gz --preview # Preview what would be restored
+        ai-asst-mgr restore backup.tar.gz --selective agents,skills  # Restore specific dirs
+
+    Args:
+        backup_path: Path to backup file. Optional if --vendor is used.
+        vendor: Vendor to restore latest backup for.
+        backup_dir: Directory containing backups.
+        preview: If True, shows preview without restoring.
+        selective: Comma-separated list of directories to restore.
+        no_backup: If True, skips creating pre-restore backup.
+    """
+    registry = VendorRegistry()
+    backup_manager = _get_backup_manager(backup_dir)
+    restore_manager = _get_restore_manager(backup_dir)
+
+    # Determine backup path
+    actual_backup_path = _resolve_backup_path(backup_path, vendor, backup_manager)
+    if actual_backup_path is None:
+        return
+
+    # Determine vendor adapter
+    adapter = _resolve_restore_adapter(registry, vendor, actual_backup_path, backup_manager)
+    if adapter is None:
+        return
+
+    def progress_callback(msg: str) -> None:
+        console.print(f"  {msg}")
+
+    # Handle preview
+    if preview:
+        _restore_preview(restore_manager, actual_backup_path, adapter)
+        return
+
+    # Handle selective restore
+    if selective:
+        directories = [d.strip() for d in selective.split(",")]
+        _restore_selective(
+            restore_manager, actual_backup_path, adapter, directories, progress_callback
+        )
+        return
+
+    # Full restore
+    _restore_full(restore_manager, actual_backup_path, adapter, not no_backup, progress_callback)
+
+
+def _resolve_backup_path(
+    backup_path: Path | None,
+    vendor: str | None,
+    backup_manager: BackupManager,
+) -> Path | None:
+    """Resolve the backup path to use.
+
+    Args:
+        backup_path: Explicit backup path if provided.
+        vendor: Vendor name to find latest backup for.
+        backup_manager: BackupManager instance.
+
+    Returns:
+        Resolved backup path or None if not found.
+    """
+    if backup_path:
+        if not backup_path.exists():
+            console.print(f"[red]Error: Backup file not found: {backup_path}[/red]")
+            raise typer.Exit(code=1)
+        return backup_path
+
+    if vendor:
+        latest = backup_manager.get_latest_backup(vendor)
+        if latest:
+            return latest.backup_path
+        console.print(f"[red]Error: No backups found for vendor '{vendor}'[/red]")
+        raise typer.Exit(code=1)
+
+    console.print("[red]Error: Please provide a backup path or use --vendor[/red]")
+    raise typer.Exit(code=1)
+
+
+def _resolve_restore_adapter(
+    registry: VendorRegistry,
+    vendor: str | None,
+    backup_path: Path,
+    backup_manager: BackupManager,
+) -> VendorAdapter | None:
+    """Resolve the vendor adapter for restore.
+
+    Args:
+        registry: VendorRegistry instance.
+        vendor: Vendor name if provided.
+        backup_path: Backup path to infer vendor from.
+        backup_manager: BackupManager instance.
+
+    Returns:
+        VendorAdapter or None if not found.
+    """
+    if vendor:
+        try:
+            return registry.get_vendor(vendor)
+        except KeyError:
+            console.print(f"[red]Error: Unknown vendor '{vendor}'[/red]")
+            raise typer.Exit(code=1) from None
+
+    # Try to infer vendor from backup metadata
+    backups = backup_manager.list_backups()
+    for bkp in backups:
+        if bkp.backup_path == backup_path:
+            try:
+                return registry.get_vendor(bkp.vendor_id)
+            except KeyError:
+                console.print(f"[red]Error: Unknown vendor '{bkp.vendor_id}'[/red]")
+                raise typer.Exit(code=1) from None
+
+    # Try to infer from backup filename
+    filename = backup_path.name.lower()
+    for vendor_id in ["claude", "gemini", "openai"]:
+        if vendor_id in filename:
+            try:
+                return registry.get_vendor(vendor_id)
+            except KeyError:
+                continue
+
+    console.print("[red]Error: Cannot determine vendor from backup. Use --vendor option.[/red]")
+    raise typer.Exit(code=1)
+
+
+def _restore_preview(
+    restore_manager: RestoreManager,
+    backup_path: Path,
+    adapter: VendorAdapter,
+) -> None:
+    """Preview restore operation.
+
+    Args:
+        restore_manager: RestoreManager instance.
+        backup_path: Path to backup file.
+        adapter: VendorAdapter instance.
+    """
+    preview_result = restore_manager.preview_restore(backup_path, adapter)
+
+    if preview_result is None:
+        console.print("[red]Error: Failed to read backup file[/red]")
+        raise typer.Exit(code=1)
+
+    console.print(Panel.fit("[bold blue]Restore Preview[/bold blue]", border_style="blue"))
+
+    console.print(f"\n[bold]Vendor:[/bold] {adapter.info.name}")
+    console.print(
+        f"[bold]Backup Date:[/bold] {preview_result.backup_timestamp.strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+    console.print(
+        f"[bold]Estimated Size:[/bold] {_format_size_bytes(preview_result.estimated_size_bytes)}"
+    )
+
+    console.print(f"\n[bold]Files to restore:[/bold] {len(preview_result.files_to_restore)}")
+    if preview_result.files_to_overwrite:
+        console.print(
+            f"[yellow]Files to overwrite:[/yellow] {len(preview_result.files_to_overwrite)}"
+        )
+        for f in preview_result.files_to_overwrite[:_MAX_PREVIEW_FILES]:
+            console.print(f"  - {f}")
+        if len(preview_result.files_to_overwrite) > _MAX_PREVIEW_FILES:
+            remaining = len(preview_result.files_to_overwrite) - _MAX_PREVIEW_FILES
+            console.print(f"  ... and {remaining} more")
+
+    if preview_result.directories_to_create:
+        console.print("\n[bold]Directories to create:[/bold]")
+        for d in preview_result.directories_to_create:
+            console.print(f"  + {d}")
+
+    console.print("\n[dim]Use without --preview to perform the restore[/dim]")
+
+
+def _restore_selective(
+    restore_manager: RestoreManager,
+    backup_path: Path,
+    adapter: VendorAdapter,
+    directories: list[str],
+    progress_callback: Callable[[str], None],
+) -> None:
+    """Perform selective restore.
+
+    Args:
+        restore_manager: RestoreManager instance.
+        backup_path: Path to backup file.
+        adapter: VendorAdapter instance.
+        directories: List of directories to restore.
+        progress_callback: Progress callback function.
+    """
+    # Show available directories first
+    available = restore_manager.get_restorable_directories(backup_path)
+    invalid_dirs = [d for d in directories if d not in available]
+
+    if invalid_dirs:
+        console.print(f"[red]Error: Invalid directories: {', '.join(invalid_dirs)}[/red]")
+        console.print(f"[yellow]Available directories: {', '.join(available)}[/yellow]")
+        raise typer.Exit(code=1)
+
+    console.print(f"\n[bold]Selectively restoring {adapter.info.name}...[/bold]")
+    console.print(f"Directories: {', '.join(directories)}")
+
+    result = restore_manager.restore_selective(backup_path, adapter, directories, progress_callback)
+
+    if result.success:
+        console.print("\n[green]✓ Restore completed successfully[/green]")
+        console.print(f"  Files restored: {result.restored_files}")
+    else:
+        console.print(f"\n[red]✗ Restore failed: {result.error}[/red]")
+        raise typer.Exit(code=1)
+
+
+def _restore_full(
+    restore_manager: RestoreManager,
+    backup_path: Path,
+    adapter: VendorAdapter,
+    create_backup: bool,
+    progress_callback: Callable[[str], None],
+) -> None:
+    """Perform full restore.
+
+    Args:
+        restore_manager: RestoreManager instance.
+        backup_path: Path to backup file.
+        adapter: VendorAdapter instance.
+        create_backup: Whether to create pre-restore backup.
+        progress_callback: Progress callback function.
+    """
+    console.print(f"\n[bold]Restoring {adapter.info.name}...[/bold]")
+
+    result = restore_manager.restore_vendor(
+        backup_path,
+        adapter,
+        create_pre_restore_backup=create_backup,
+        progress_callback=progress_callback,
+    )
+
+    if result.success:
+        console.print("\n[green]✓ Restore completed successfully[/green]")
+        console.print(f"  Files restored: {result.restored_files}")
+        if result.pre_restore_backup:
+            console.print(f"  Pre-restore backup: {result.pre_restore_backup}")
+    else:
+        console.print(f"\n[red]✗ Restore failed: {result.error}[/red]")
+        if result.pre_restore_backup:
+            console.print(f"[yellow]Rollback available: {result.pre_restore_backup}[/yellow]")
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def sync(  # noqa: PLR0913 - Typer CLI requires individual parameters for proper flag generation
+    repo_url: Annotated[
+        str,
+        typer.Argument(help="Git repository URL to sync from"),
+    ],
+    vendor: Annotated[
+        str | None,
+        typer.Option("--vendor", "-v", help="Sync specific vendor only"),
+    ] = None,
+    branch: Annotated[
+        str,
+        typer.Option("--branch", "-b", help="Git branch to sync from"),
+    ] = "main",
+    strategy: Annotated[
+        str,
+        typer.Option(
+            "--strategy", "-s", help="Merge strategy: replace, merge, keep_local, keep_remote"
+        ),
+    ] = "keep_remote",
+    preview: Annotated[
+        bool,
+        typer.Option("--preview", "-p", help="Preview sync without making changes"),
+    ] = False,
+    no_backup: Annotated[
+        bool,
+        typer.Option("--no-backup", help="Skip creating pre-sync backup"),
+    ] = False,
+    backup_dir: Annotated[
+        Path | None,
+        typer.Option("--backup-dir", "-d", help="Directory to store pre-sync backups"),
+    ] = None,
+) -> None:
+    """Synchronize AI assistant configurations from a Git repository.
+
+    Clones configuration from a Git repository and syncs it to local
+    vendor configuration directories with various merge strategies.
+
+    Merge Strategies:
+        replace    - Replace all local files with remote
+        merge      - Keep both versions (creates .remote files for conflicts)
+        keep_local - Keep local files if they exist
+        keep_remote - Use remote files (default)
+
+    Examples:
+        ai-asst-mgr sync https://github.com/user/configs.git
+        ai-asst-mgr sync https://github.com/user/configs.git --vendor claude
+        ai-asst-mgr sync https://github.com/user/configs.git --preview
+        ai-asst-mgr sync https://github.com/user/configs.git --strategy merge
+
+    Args:
+        repo_url: Git repository URL to sync from.
+        vendor: Optional vendor to sync. If not provided, syncs all.
+        branch: Git branch to sync from.
+        strategy: Merge strategy to use.
+        preview: If True, shows preview without syncing.
+        no_backup: If True, skips creating pre-sync backup.
+        backup_dir: Directory for pre-sync backups.
+    """
+    registry = VendorRegistry()
+    sync_manager = _get_sync_manager(backup_dir)
+
+    # Parse merge strategy
+    try:
+        merge_strategy = MergeStrategy(strategy)
+    except ValueError:
+        valid_strategies = ", ".join(s.value for s in MergeStrategy)
+        console.print(f"[red]Error: Invalid strategy '{strategy}'[/red]")
+        console.print(f"[yellow]Valid strategies: {valid_strategies}[/yellow]")
+        raise typer.Exit(code=1) from None
+
+    # Get vendors to sync
+    if vendor:
+        try:
+            vendors_to_sync = {vendor: registry.get_vendor(vendor)}
+        except KeyError:
+            console.print(f"[red]Error: Unknown vendor '{vendor}'[/red]")
+            available = ", ".join(registry.get_all_vendors().keys())
+            console.print(f"[yellow]Available vendors: {available}[/yellow]")
+            raise typer.Exit(code=1) from None
+    else:
+        vendors_to_sync = registry.get_all_vendors()
+
+    # Handle preview
+    if preview:
+        _sync_preview(sync_manager, repo_url, vendors_to_sync, branch)
+        return
+
+    # Perform sync
+    _sync_execute(
+        sync_manager,
+        repo_url,
+        vendors_to_sync,
+        branch,
+        merge_strategy,
+        not no_backup,
+    )
+
+
+def _sync_preview(
+    sync_manager: SyncManager,
+    repo_url: str,
+    vendors: dict[str, VendorAdapter],
+    branch: str,
+) -> None:
+    """Preview sync operation.
+
+    Args:
+        sync_manager: SyncManager instance.
+        repo_url: Git repository URL.
+        vendors: Dictionary of vendors to sync.
+        branch: Git branch.
+    """
+    console.print(Panel.fit("[bold blue]Sync Preview[/bold blue]", border_style="blue"))
+    console.print(f"\n[bold]Repository:[/bold] {repo_url}")
+    console.print(f"[bold]Branch:[/bold] {branch}\n")
+
+    for _vendor_id, adapter in vendors.items():
+        console.print(f"[bold cyan]{adapter.info.name}:[/bold cyan]")
+
+        preview_result = sync_manager.preview_sync(repo_url, adapter, branch)
+
+        if preview_result is None:
+            console.print("  [red]Failed to preview (check repository URL)[/red]")
+            continue
+
+        if preview_result.files_to_add:
+            console.print(f"  [green]Files to add:[/green] {len(preview_result.files_to_add)}")
+            for f in preview_result.files_to_add[:_MAX_SYNC_PREVIEW_FILES]:
+                console.print(f"    + {f}")
+            if len(preview_result.files_to_add) > _MAX_SYNC_PREVIEW_FILES:
+                remaining = len(preview_result.files_to_add) - _MAX_SYNC_PREVIEW_FILES
+                console.print(f"    ... and {remaining} more")
+
+        if preview_result.files_to_modify:
+            console.print(
+                f"  [yellow]Files to modify:[/yellow] {len(preview_result.files_to_modify)}"
+            )
+            for f in preview_result.files_to_modify[:_MAX_SYNC_PREVIEW_FILES]:
+                console.print(f"    ~ {f}")
+            if len(preview_result.files_to_modify) > _MAX_SYNC_PREVIEW_FILES:
+                remaining = len(preview_result.files_to_modify) - _MAX_SYNC_PREVIEW_FILES
+                console.print(f"    ... and {remaining} more")
+
+        if preview_result.files_to_delete:
+            delete_count = len(preview_result.files_to_delete)
+            console.print(f"  [red]Files to delete (REPLACE mode):[/red] {delete_count}")
+
+        if preview_result.conflicts:
+            console.print(
+                f"  [yellow]Potential conflicts:[/yellow] {len(preview_result.conflicts)}"
+            )
+
+        if not (preview_result.files_to_add or preview_result.files_to_modify):
+            console.print("  [dim]No changes detected[/dim]")
+
+        console.print()
+
+    console.print("[dim]Use without --preview to perform the sync[/dim]")
+
+
+def _sync_execute(
+    sync_manager: SyncManager,
+    repo_url: str,
+    vendors: dict[str, VendorAdapter],
+    branch: str,
+    strategy: MergeStrategy,
+    create_backup: bool,
+) -> None:
+    """Execute sync operation.
+
+    Args:
+        sync_manager: SyncManager instance.
+        repo_url: Git repository URL.
+        vendors: Dictionary of vendors to sync.
+        branch: Git branch.
+        strategy: Merge strategy.
+        create_backup: Whether to create pre-sync backup.
+    """
+    console.print(
+        Panel.fit("[bold blue]Syncing from Git Repository[/bold blue]", border_style="blue")
+    )
+    console.print(f"\n[bold]Repository:[/bold] {repo_url}")
+    console.print(f"[bold]Branch:[/bold] {branch}")
+    console.print(f"[bold]Strategy:[/bold] {strategy.value}\n")
+
+    def progress_callback(msg: str) -> None:
+        console.print(f"  {msg}")
+
+    results = sync_manager.sync_all_vendors(
+        repo_url,
+        vendors,
+        branch,
+        strategy,
+        progress_callback,
+        create_backup=create_backup,
+    )
+
+    # Display results table
+    table = Table(title="Sync Results", show_header=True, header_style="bold")
+    table.add_column("Vendor", width=15)
+    table.add_column("Status", width=12)
+    table.add_column("Added", width=8)
+    table.add_column("Modified", width=10)
+    table.add_column("Deleted", width=8)
+    table.add_column("Duration", width=10)
+
+    total_added = 0
+    total_modified = 0
+    total_deleted = 0
+    successful = 0
+
+    for vendor_id, result in results.items():
+        if result.success:
+            successful += 1
+            total_added += result.files_added
+            total_modified += result.files_modified
+            total_deleted += result.files_deleted
+
+            table.add_row(
+                vendor_id.capitalize(),
+                "[green]Success[/green]",
+                str(result.files_added),
+                str(result.files_modified),
+                str(result.files_deleted),
+                f"{result.duration_seconds:.1f}s",
+            )
+
+            if result.pre_sync_backup:
+                console.print(f"  [dim]Pre-sync backup: {result.pre_sync_backup}[/dim]")
+        else:
+            table.add_row(
+                vendor_id.capitalize(),
+                "[red]Failed[/red]",
+                "-",
+                "-",
+                "-",
+                "-",
+            )
+            console.print(f"  [red]{vendor_id}: {result.error}[/red]")
+
+    console.print(table)
+    console.print(
+        f"\n[bold]Summary:[/bold] {successful}/{len(results)} succeeded, "
+        f"+{total_added} ~{total_modified} -{total_deleted} files"
+    )
 
 
 def main() -> None:

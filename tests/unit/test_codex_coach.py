@@ -448,3 +448,145 @@ class TestCodexCoachEdgeCases:
         stats = coach.get_stats()
 
         assert stats["config_file_exists"] is False
+
+    def test_default_profile_with_camel_case(
+        self, coach_with_temp_dir: CodexCoach, temp_codex_dir: Path
+    ) -> None:
+        """Test default profile insight using defaultProfile key."""
+        config = {
+            "defaultProfile": "production",
+            "profiles": {
+                "default": {"api_key": "sk-xxx"},
+                "production": {"api_key": "sk-yyy"},
+            },
+        }
+        (temp_codex_dir / "config.toml").write_text(toml.dumps(config))
+
+        insights = coach_with_temp_dir.get_insights()
+
+        default_insights = [i for i in insights if i.metric_name == "default_profile"]
+        assert len(default_insights) >= 1
+        assert default_insights[0].metric_value == "production"
+
+    def test_model_insight_with_default_model_key(
+        self, coach_with_temp_dir: CodexCoach, temp_codex_dir: Path
+    ) -> None:
+        """Test model insight uses defaultModel key as fallback."""
+        config = {"defaultModel": "gpt-3.5-turbo"}
+        (temp_codex_dir / "config.toml").write_text(toml.dumps(config))
+
+        insights = coach_with_temp_dir.get_insights()
+
+        model_insights = [i for i in insights if i.category == "model"]
+        assert len(model_insights) >= 1
+        assert any(i.metric_value == "gpt-3.5-turbo" for i in model_insights)
+
+    def test_large_agents_md_else_branch(
+        self, coach_with_temp_dir: CodexCoach, temp_codex_dir: Path
+    ) -> None:
+        """Test recommendation when AGENTS.md exists but is not large."""
+        # Create a moderately sized AGENTS.md (not triggering large file warning)
+        agents_md = temp_codex_dir / "AGENTS.md"
+        agents_md.write_text("# Small File\nJust some content")
+
+        recommendations = coach_with_temp_dir.get_recommendations()
+
+        # Should not have large file recommendation
+        large_recs = [r for r in recommendations if "optimize" in r.title.lower()]
+        # File is small, so no optimize recommendation
+        assert all(
+            r.priority != Priority.HIGH or "AGENTS.md" not in r.description for r in large_recs
+        )
+
+    def test_sandbox_disabled_else_branch(
+        self, coach_with_temp_dir: CodexCoach, temp_codex_dir: Path
+    ) -> None:
+        """Test no sandbox disabled recommendation when enabled."""
+        config = {"sandbox": {"enabled": True}}
+        (temp_codex_dir / "config.toml").write_text(toml.dumps(config))
+
+        recommendations = coach_with_temp_dir.get_recommendations()
+
+        # Should not have enable sandbox recommendation (only configure recommendation)
+        enable_recs = [
+            r
+            for r in recommendations
+            if "enable sandbox" in r.title.lower() and r.priority == Priority.HIGH
+        ]
+        assert len(enable_recs) == 0
+
+    def test_auto_approve_with_camel_case(
+        self, coach_with_temp_dir: CodexCoach, temp_codex_dir: Path
+    ) -> None:
+        """Test recommendation when autoApproveExec is enabled."""
+        config = {"autoApproveExec": True}
+        (temp_codex_dir / "config.toml").write_text(toml.dumps(config))
+
+        recommendations = coach_with_temp_dir.get_recommendations()
+
+        approve_recs = [r for r in recommendations if "auto-approve" in r.title.lower()]
+        assert len(approve_recs) >= 1
+
+    def test_export_report_oserror(self, coach_with_temp_dir: CodexCoach, tmp_path: Path) -> None:
+        """Test export_report handles OSError."""
+        coach_with_temp_dir.analyze()
+        # Create a file where we expect a directory
+        bad_path = tmp_path / "badfile"
+        bad_path.write_text("block")
+        output_path = bad_path / "nested" / "report"
+
+        with pytest.raises(RuntimeError, match="Failed to export report"):
+            coach_with_temp_dir.export_report(output_path, format="json")
+
+    def test_export_report_no_report_after_analyze(self, tmp_path: Path) -> None:
+        """Test export_report when _last_report becomes None somehow."""
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        coach = CodexCoach(config_dir=codex_dir)
+
+        # Manually set _last_report to None after calling analyze
+        coach.analyze()
+        coach._last_report = None
+
+        # Should still work because export_report calls analyze() again
+        output_path = tmp_path / "report"
+        result_path = coach.export_report(output_path, format="json")
+        assert result_path.exists()
+
+    def test_count_md_sections_oserror(
+        self, coach_with_temp_dir: CodexCoach, temp_codex_dir: Path
+    ) -> None:
+        """Test _count_md_sections handles OSError gracefully."""
+        # This was already tested above, but ensuring coverage
+        count = coach_with_temp_dir._count_md_sections(temp_codex_dir / "nonexistent.md")
+        assert count == 0
+
+    def test_export_markdown_with_insights_and_recommendations(
+        self, coach_with_temp_dir: CodexCoach, temp_codex_dir: Path, tmp_path: Path
+    ) -> None:
+        """Test markdown export with both insights and recommendations."""
+        # Create config with profiles and AGENTS.md to generate insights
+        config = {
+            "model": "gpt-4",
+            "profiles": {
+                "default": {"api_key": "sk-xxx"},
+                "work": {"api_key": "sk-yyy"},
+            },
+            "sandbox": {"enabled": True},
+        }
+        (temp_codex_dir / "config.toml").write_text(toml.dumps(config))
+
+        agents_md = temp_codex_dir / "AGENTS.md"
+        agents_md.write_text("# Agents\n\n## Agent 1\n\n## Agent 2\n" + "x" * 1000)
+
+        coach_with_temp_dir.analyze()
+        output_path = tmp_path / "report"
+
+        result_path = coach_with_temp_dir.export_report(output_path, format="markdown")
+
+        content = result_path.read_text()
+        # Verify insights section with actual data
+        assert "### Profile Configuration" in content or "Profile" in content
+        assert "### AGENTS.md Configuration" in content or "AGENTS.md" in content
+        # Verify recommendations section
+        assert "## Recommendations" in content
