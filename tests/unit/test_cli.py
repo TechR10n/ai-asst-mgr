@@ -3636,3 +3636,256 @@ class TestAgentsSyncCommand:
             assert result.exit_code == 0
             assert "Synced to 1 vendor(s)" in result.stdout
             assert "Errors:" in result.stdout
+
+
+class TestScheduleCommand:
+    """Tests for the schedule command group."""
+
+    def test_schedule_status_shows_platform(self) -> None:
+        """Test schedule status shows platform info."""
+        with patch("ai_asst_mgr.cli.get_scheduler") as mock_get_scheduler:
+            from ai_asst_mgr.platform import ScheduleInfo
+
+            mock_scheduler = MagicMock()
+            mock_scheduler.platform_name = "macOS"
+            mock_scheduler.get_schedule_info.return_value = ScheduleInfo(is_active=False)
+            mock_get_scheduler.return_value = mock_scheduler
+
+            result = runner.invoke(app, ["schedule", "status"])
+            assert result.exit_code == 0
+            assert "Backup Schedule Status" in result.stdout
+            assert "macOS" in result.stdout
+
+    def test_schedule_status_active(self) -> None:
+        """Test schedule status shows active schedule."""
+        with patch("ai_asst_mgr.cli.get_scheduler") as mock_get_scheduler:
+            from ai_asst_mgr.platform import IntervalType, ScheduleInfo
+
+            mock_scheduler = MagicMock()
+            mock_scheduler.platform_name = "macOS"
+            mock_scheduler.get_schedule_info.return_value = ScheduleInfo(
+                is_active=True,
+                interval=IntervalType.DAILY,
+                script_path=Path("/path/to/script.sh"),
+                next_run="Daily at 02:00",
+            )
+            mock_get_scheduler.return_value = mock_scheduler
+
+            result = runner.invoke(app, ["schedule", "status"])
+            assert result.exit_code == 0
+            assert "Active" in result.stdout
+            assert "Daily" in result.stdout
+
+    def test_schedule_status_unsupported_platform(self) -> None:
+        """Test schedule status on unsupported platform."""
+        with patch("ai_asst_mgr.cli.get_scheduler") as mock_get_scheduler:
+            from ai_asst_mgr.platform import UnsupportedPlatformError
+
+            mock_get_scheduler.side_effect = UnsupportedPlatformError("win32")
+
+            result = runner.invoke(app, ["schedule", "status"])
+            assert result.exit_code == 1
+            assert "win32" in result.stdout
+
+    def test_schedule_setup_success(self, tmp_path: Path) -> None:
+        """Test schedule setup creates schedule successfully."""
+        script = tmp_path / "backup.sh"
+        script.write_text("#!/bin/bash\necho backup")
+        script.chmod(0o755)
+
+        with patch("ai_asst_mgr.cli.get_scheduler") as mock_get_scheduler:
+            from ai_asst_mgr.platform import IntervalType, ScheduleInfo
+
+            mock_scheduler = MagicMock()
+            mock_scheduler.platform_name = "macOS"
+            mock_scheduler.setup_schedule.return_value = True
+            mock_scheduler.get_schedule_info.return_value = ScheduleInfo(
+                is_active=True,
+                interval=IntervalType.DAILY,
+                next_run="Daily at 02:00",
+            )
+            mock_get_scheduler.return_value = mock_scheduler
+
+            result = runner.invoke(app, ["schedule", "setup", str(script)])
+            assert result.exit_code == 0
+            assert "successfully" in result.stdout
+
+    def test_schedule_setup_script_not_found(self, tmp_path: Path) -> None:
+        """Test schedule setup with non-existent script."""
+        result = runner.invoke(app, ["schedule", "setup", str(tmp_path / "missing.sh")])
+        assert result.exit_code == 1
+        assert "not found" in result.stdout
+
+    def test_schedule_setup_invalid_interval(self, tmp_path: Path) -> None:
+        """Test schedule setup with invalid interval."""
+        script = tmp_path / "backup.sh"
+        script.write_text("#!/bin/bash")
+        script.chmod(0o755)
+
+        result = runner.invoke(app, ["schedule", "setup", str(script), "--interval", "invalid"])
+        assert result.exit_code == 1
+        assert "Invalid interval" in result.stdout
+
+    def test_schedule_setup_invalid_hour(self, tmp_path: Path) -> None:
+        """Test schedule setup with invalid hour."""
+        script = tmp_path / "backup.sh"
+        script.write_text("#!/bin/bash")
+        script.chmod(0o755)
+
+        result = runner.invoke(app, ["schedule", "setup", str(script), "--hour", "25"])
+        assert result.exit_code == 1
+        assert "Hour must be" in result.stdout
+
+    def test_schedule_setup_invalid_minute(self, tmp_path: Path) -> None:
+        """Test schedule setup with invalid minute."""
+        script = tmp_path / "backup.sh"
+        script.write_text("#!/bin/bash")
+        script.chmod(0o755)
+
+        result = runner.invoke(app, ["schedule", "setup", str(script), "--minute", "60"])
+        assert result.exit_code == 1
+        assert "Minute must be" in result.stdout
+
+    def test_schedule_setup_invalid_day_of_week(self, tmp_path: Path) -> None:
+        """Test schedule setup with invalid day of week."""
+        script = tmp_path / "backup.sh"
+        script.write_text("#!/bin/bash")
+        script.chmod(0o755)
+
+        result = runner.invoke(app, ["schedule", "setup", str(script), "--day-of-week", "7"])
+        assert result.exit_code == 1
+        assert "Day of week must be" in result.stdout
+
+    def test_schedule_setup_invalid_day_of_month(self, tmp_path: Path) -> None:
+        """Test schedule setup with invalid day of month."""
+        script = tmp_path / "backup.sh"
+        script.write_text("#!/bin/bash")
+        script.chmod(0o755)
+
+        result = runner.invoke(app, ["schedule", "setup", str(script), "--day-of-month", "32"])
+        assert result.exit_code == 1
+        assert "Day of month must be" in result.stdout
+
+    def test_schedule_setup_failure(self, tmp_path: Path) -> None:
+        """Test schedule setup failure."""
+        script = tmp_path / "backup.sh"
+        script.write_text("#!/bin/bash")
+        script.chmod(0o755)
+
+        with patch("ai_asst_mgr.cli.get_scheduler") as mock_get_scheduler:
+            mock_scheduler = MagicMock()
+            mock_scheduler.platform_name = "macOS"
+            mock_scheduler.setup_schedule.return_value = False
+            mock_get_scheduler.return_value = mock_scheduler
+
+            result = runner.invoke(app, ["schedule", "setup", str(script)])
+            assert result.exit_code == 1
+            assert "Failed" in result.stdout
+
+    def test_schedule_remove_no_schedule(self) -> None:
+        """Test schedule remove when no schedule exists."""
+        with patch("ai_asst_mgr.cli.get_scheduler") as mock_get_scheduler:
+            mock_scheduler = MagicMock()
+            mock_scheduler.is_scheduled.return_value = False
+            mock_get_scheduler.return_value = mock_scheduler
+
+            result = runner.invoke(app, ["schedule", "remove"])
+            assert result.exit_code == 0
+            assert "No backup schedule" in result.stdout
+
+    def test_schedule_remove_force(self) -> None:
+        """Test schedule remove with force flag."""
+        with patch("ai_asst_mgr.cli.get_scheduler") as mock_get_scheduler:
+            from ai_asst_mgr.platform import IntervalType, ScheduleInfo
+
+            mock_scheduler = MagicMock()
+            mock_scheduler.is_scheduled.return_value = True
+            mock_scheduler.get_schedule_info.return_value = ScheduleInfo(
+                is_active=True,
+                interval=IntervalType.DAILY,
+            )
+            mock_scheduler.remove_schedule.return_value = True
+            mock_get_scheduler.return_value = mock_scheduler
+
+            result = runner.invoke(app, ["schedule", "remove", "--force"])
+            assert result.exit_code == 0
+            assert "successfully" in result.stdout
+
+    def test_schedule_remove_confirm_no(self) -> None:
+        """Test schedule remove with user declining confirmation."""
+        with patch("ai_asst_mgr.cli.get_scheduler") as mock_get_scheduler:
+            from ai_asst_mgr.platform import IntervalType, ScheduleInfo
+
+            mock_scheduler = MagicMock()
+            mock_scheduler.is_scheduled.return_value = True
+            mock_scheduler.get_schedule_info.return_value = ScheduleInfo(
+                is_active=True,
+                interval=IntervalType.DAILY,
+            )
+            mock_get_scheduler.return_value = mock_scheduler
+
+            result = runner.invoke(app, ["schedule", "remove"], input="n\n")
+            assert result.exit_code == 0
+            assert "Aborted" in result.stdout
+            mock_scheduler.remove_schedule.assert_not_called()
+
+    def test_schedule_remove_failure(self) -> None:
+        """Test schedule remove failure."""
+        with patch("ai_asst_mgr.cli.get_scheduler") as mock_get_scheduler:
+            from ai_asst_mgr.platform import IntervalType, ScheduleInfo
+
+            mock_scheduler = MagicMock()
+            mock_scheduler.is_scheduled.return_value = True
+            mock_scheduler.get_schedule_info.return_value = ScheduleInfo(
+                is_active=True,
+                interval=IntervalType.DAILY,
+            )
+            mock_scheduler.remove_schedule.return_value = False
+            mock_get_scheduler.return_value = mock_scheduler
+
+            result = runner.invoke(app, ["schedule", "remove", "--force"])
+            assert result.exit_code == 1
+            assert "Failed" in result.stdout
+
+
+class TestScheduleHelperFunctions:
+    """Tests for schedule CLI helper functions."""
+
+    def test_get_interval_display_none(self) -> None:
+        """Test _get_interval_display with None."""
+        from ai_asst_mgr.cli import _get_interval_display
+
+        result = _get_interval_display(None)
+        assert "Not set" in result
+
+    def test_get_interval_display_hourly(self) -> None:
+        """Test _get_interval_display with hourly."""
+        from ai_asst_mgr.cli import _get_interval_display
+        from ai_asst_mgr.platform import IntervalType
+
+        result = _get_interval_display(IntervalType.HOURLY)
+        assert "Hourly" in result
+
+    def test_get_interval_display_daily(self) -> None:
+        """Test _get_interval_display with daily."""
+        from ai_asst_mgr.cli import _get_interval_display
+        from ai_asst_mgr.platform import IntervalType
+
+        result = _get_interval_display(IntervalType.DAILY)
+        assert "Daily" in result
+
+    def test_get_interval_display_weekly(self) -> None:
+        """Test _get_interval_display with weekly."""
+        from ai_asst_mgr.cli import _get_interval_display
+        from ai_asst_mgr.platform import IntervalType
+
+        result = _get_interval_display(IntervalType.WEEKLY)
+        assert "Weekly" in result
+
+    def test_get_interval_display_monthly(self) -> None:
+        """Test _get_interval_display with monthly."""
+        from ai_asst_mgr.cli import _get_interval_display
+        from ai_asst_mgr.platform import IntervalType
+
+        result = _get_interval_display(IntervalType.MONTHLY)
+        assert "Monthly" in result

@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Complete repository configuration automation
+"""Complete repository configuration automation
 
 Configures GitHub repository with single-maintainer control:
 - Repository visibility (public)
@@ -22,12 +21,13 @@ import json
 import subprocess
 import sys
 from dataclasses import dataclass
-from typing import Any, Optional
+from pathlib import Path
 
 
 @dataclass
 class RepositoryConfig:
     """Repository configuration."""
+
     owner: str = "TechR10n"
     repo: str = "ai-asst-mgr"
     visibility: str = "public"
@@ -54,9 +54,17 @@ class RepositoryConfig:
     def __post_init__(self):
         if self.topics is None:
             self.topics = [
-                "ai", "claude", "gemini", "codex", "ai-assistant",
-                "configuration-management", "python", "cli", "fastapi",
-                "developer-tools", "automation"
+                "ai",
+                "claude",
+                "gemini",
+                "codex",
+                "ai-assistant",
+                "configuration-management",
+                "python",
+                "cli",
+                "fastapi",
+                "developer-tools",
+                "automation",
             ]
 
 
@@ -125,27 +133,19 @@ class GitHubConfigurator:
         """Verify GitHub CLI is installed and authenticated."""
         try:
             # Check if gh is installed
-            result = subprocess.run(
-                ["gh", "--version"],
-                capture_output=True,
-                check=True
-            )
+            result = subprocess.run(["gh", "--version"], capture_output=True, check=True)
             print(f"✓ GitHub CLI installed: {result.stdout.decode().split()[2]}")
 
             # Check authentication
-            result = subprocess.run(
-                ["gh", "auth", "status"],
-                capture_output=True,
-                check=True
-            )
+            result = subprocess.run(["gh", "auth", "status"], capture_output=True, check=True)
             print("✓ GitHub CLI authenticated")
-
-            return True
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
             print(f"✗ GitHub CLI error: {e}")
             print("Install: brew install gh")
             print("Authenticate: gh auth login")
             return False
+        else:
+            return True
 
     def set_visibility(self) -> bool:
         """Set repository visibility."""
@@ -155,19 +155,17 @@ class GitHubConfigurator:
 
         try:
             subprocess.run(
-                [
-                    "gh", "repo", "edit", self.repo_path,
-                    "--visibility", self.config.visibility
-                ],
+                ["gh", "repo", "edit", self.repo_path, "--visibility", self.config.visibility],
                 capture_output=True,
                 text=True,
-                check=True
+                check=True,
             )
-            print(f"✓ Repository visibility set to: {self.config.visibility}")
-            return True
         except subprocess.CalledProcessError as e:
             print(f"✗ Failed to set visibility: {e.stderr}")
             return False
+        else:
+            print(f"✓ Repository visibility set to: {self.config.visibility}")
+            return True
 
     def configure_features(self) -> bool:
         """Configure repository features."""
@@ -192,7 +190,7 @@ class GitHubConfigurator:
                     ["gh", "repo", "edit", self.repo_path, flag],
                     capture_output=True,
                     text=True,
-                    check=True
+                    check=True,
                 )
                 print(f"✓ {feature}: {'enabled' if enabled else 'disabled'}")
             except subprocess.CalledProcessError as e:
@@ -224,11 +222,12 @@ class GitHubConfigurator:
 
         try:
             subprocess.run(cmd, capture_output=True, text=True, check=True)
-            print("✓ Pull request settings configured")
-            return True
         except subprocess.CalledProcessError as e:
             print(f"✗ Failed to configure PR settings: {e.stderr}")
             return False
+        else:
+            print("✓ Pull request settings configured")
+            return True
 
     def set_topics(self) -> bool:
         """Set repository topics."""
@@ -242,30 +241,38 @@ class GitHubConfigurator:
 
             subprocess.run(
                 [
-                    "gh", "api",
+                    "gh",
+                    "api",
                     f"repos/{self.repo_path}/topics",
-                    "--method", "PUT",
-                    "-H", "Accept: application/vnd.github+json",
-                    "-H", "X-GitHub-Api-Version: 2022-11-28",
-                    "--input", "-"
+                    "--method",
+                    "PUT",
+                    "-H",
+                    "Accept: application/vnd.github+json",
+                    "-H",
+                    "X-GitHub-Api-Version: 2022-11-28",
+                    "--input",
+                    "-",
                 ],
                 input=topics_json,
                 text=True,
                 capture_output=True,
-                check=True
+                check=True,
             )
-            print(f"✓ Topics set: {', '.join(self.config.topics)}")
-            return True
         except subprocess.CalledProcessError as e:
             print(f"✗ Failed to set topics: {e.stderr}")
             return False
+        else:
+            print(f"✓ Topics set: {', '.join(self.config.topics)}")
+            return True
 
     def enable_security(self) -> bool:
         """Enable security features."""
         if self.dry_run:
             print("[DRY RUN] Would enable security features:")
             print(f"  - Dependabot alerts: {self.config.enable_dependabot_alerts}")
-            print(f"  - Dependabot security updates: {self.config.enable_dependabot_security_updates}")
+            print(
+                f"  - Dependabot security updates: {self.config.enable_dependabot_security_updates}"
+            )
             return True
 
         success = True
@@ -275,12 +282,14 @@ class GitHubConfigurator:
             try:
                 subprocess.run(
                     [
-                        "gh", "api",
+                        "gh",
+                        "api",
                         f"repos/{self.repo_path}/vulnerability-alerts",
-                        "--method", "PUT"
+                        "--method",
+                        "PUT",
                     ],
                     capture_output=True,
-                    check=True
+                    check=True,
                 )
                 print("✓ Dependabot alerts enabled")
             except subprocess.CalledProcessError as e:
@@ -291,12 +300,14 @@ class GitHubConfigurator:
             try:
                 subprocess.run(
                     [
-                        "gh", "api",
+                        "gh",
+                        "api",
                         f"repos/{self.repo_path}/automated-security-fixes",
-                        "--method", "PUT"
+                        "--method",
+                        "PUT",
                     ],
                     capture_output=True,
-                    check=True
+                    check=True,
                 )
                 print("✓ Dependabot security updates enabled")
             except subprocess.CalledProcessError as e:
@@ -322,12 +333,12 @@ class GitHubConfigurator:
             "required_pull_request_reviews": {
                 "required_approving_review_count": 1,
                 "require_code_owner_reviews": True,
-                "dismiss_stale_reviews": True
+                "dismiss_stale_reviews": True,
             },
             "required_conversation_resolution": True,
             "restrictions": None,  # No restrictions on who can push
             "allow_force_pushes": False,
-            "allow_deletions": False
+            "allow_deletions": False,
         }
 
         try:
@@ -335,25 +346,31 @@ class GitHubConfigurator:
 
             subprocess.run(
                 [
-                    "gh", "api",
+                    "gh",
+                    "api",
                     f"repos/{self.repo_path}/branches/main/protection",
-                    "--method", "PUT",
-                    "-H", "Accept: application/vnd.github+json",
-                    "-H", "X-GitHub-Api-Version: 2022-11-28",
-                    "--input", "-"
+                    "--method",
+                    "PUT",
+                    "-H",
+                    "Accept: application/vnd.github+json",
+                    "-H",
+                    "X-GitHub-Api-Version: 2022-11-28",
+                    "--input",
+                    "-",
                 ],
                 input=config_json,
                 text=True,
                 capture_output=True,
-                check=True
+                check=True,
             )
-            print("✓ Branch protection configured for 'main'")
-            return True
         except subprocess.CalledProcessError as e:
             print(f"✗ Failed to configure branch protection: {e.stderr}")
             # This is often due to needing to create the branch first
             print("Note: Branch protection requires 'main' branch to exist")
             return False
+        else:
+            print("✓ Branch protection configured for 'main'")
+            return True
 
 
 class RepositoryVerifier:
@@ -411,19 +428,18 @@ class RepositoryVerifier:
                 ["gh", "repo", "view", self.repo_path, "--json", "visibility"],
                 capture_output=True,
                 text=True,
-                check=True
+                check=True,
             )
             data = json.loads(result.stdout)
             visibility = data.get("visibility", "").lower()
-
+        except Exception as e:
+            print(f"✗ Failed to verify visibility: {e}")
+            return False
+        else:
             if visibility == self.config.visibility:
                 print(f"✓ Repository is {visibility}")
                 return True
-            else:
-                print(f"✗ Repository is {visibility}, expected {self.config.visibility}")
-                return False
-        except Exception as e:
-            print(f"✗ Failed to verify visibility: {e}")
+            print(f"✗ Repository is {visibility}, expected {self.config.visibility}")
             return False
 
     def verify_features(self) -> bool:
@@ -431,15 +447,22 @@ class RepositoryVerifier:
         try:
             result = subprocess.run(
                 [
-                    "gh", "repo", "view", self.repo_path, "--json",
-                    "hasIssuesEnabled,hasWikiEnabled,hasDiscussionsEnabled,hasProjectsEnabled"
+                    "gh",
+                    "repo",
+                    "view",
+                    self.repo_path,
+                    "--json",
+                    "hasIssuesEnabled,hasWikiEnabled,hasDiscussionsEnabled,hasProjectsEnabled",
                 ],
                 capture_output=True,
                 text=True,
-                check=True
+                check=True,
             )
             data = json.loads(result.stdout)
-
+        except Exception as e:
+            print(f"✗ Failed to verify features: {e}")
+            return False
+        else:
             features = {
                 "issues": (data.get("hasIssuesEnabled"), self.config.has_issues),
                 "wiki": (data.get("hasWikiEnabled"), self.config.has_wiki),
@@ -456,9 +479,6 @@ class RepositoryVerifier:
                     all_correct = False
 
             return all_correct
-        except Exception as e:
-            print(f"✗ Failed to verify features: {e}")
-            return False
 
     def verify_topics(self) -> bool:
         """Verify repository topics."""
@@ -467,106 +487,97 @@ class RepositoryVerifier:
                 ["gh", "repo", "view", self.repo_path, "--json", "repositoryTopics"],
                 capture_output=True,
                 text=True,
-                check=True
+                check=True,
             )
             data = json.loads(result.stdout)
             topics = [t["name"] for t in data.get("repositoryTopics", [])]
-
+        except Exception as e:
+            print(f"✗ Failed to verify topics: {e}")
+            return False
+        else:
             missing = set(self.config.topics) - set(topics)
             extra = set(topics) - set(self.config.topics)
 
             if not missing and not extra:
                 print(f"✓ Topics correct: {', '.join(topics)}")
                 return True
-            else:
-                if missing:
-                    print(f"⚠️  Missing topics: {', '.join(missing)}")
-                if extra:
-                    print(f"⚠️  Extra topics: {', '.join(extra)}")
-                return False
-        except Exception as e:
-            print(f"✗ Failed to verify topics: {e}")
+            if missing:
+                print(f"⚠️  Missing topics: {', '.join(missing)}")
+            if extra:
+                print(f"⚠️  Extra topics: {', '.join(extra)}")
             return False
 
     def verify_branch_protection(self) -> bool:
         """Verify branch protection rules."""
         try:
-            result = subprocess.run(
-                [
-                    "gh", "api",
-                    f"repos/{self.repo_path}/branches/main/protection"
-                ],
+            api_result = subprocess.run(
+                ["gh", "api", f"repos/{self.repo_path}/branches/main/protection"],
                 capture_output=True,
                 text=True,
-                check=True
+                check=True,
             )
-            data = json.loads(result.stdout)
-
-            checks = [
-                ("Pull request required", data.get("required_pull_request_reviews") is not None),
-                ("Code owner review required",
-                 data.get("required_pull_request_reviews", {}).get("require_code_owner_reviews", False)),
-            ]
-
-            all_correct = True
-            for name, result in checks:
-                if result:
-                    print(f"✓ {name}")
-                else:
-                    print(f"✗ {name}")
-                    all_correct = False
-
-            return all_correct
+            data = json.loads(api_result.stdout)
         except subprocess.CalledProcessError:
             print("✗ Branch protection not configured")
             return False
         except Exception as e:
             print(f"✗ Failed to verify branch protection: {e}")
             return False
+        else:
+            checks = [
+                ("Pull request required", data.get("required_pull_request_reviews") is not None),
+                (
+                    "Code owner review required",
+                    data.get("required_pull_request_reviews", {}).get(
+                        "require_code_owner_reviews", False
+                    ),
+                ),
+            ]
+
+            all_correct = True
+            for name, check_result in checks:
+                if check_result:
+                    print(f"✓ {name}")
+                else:
+                    print(f"✗ {name}")
+                    all_correct = False
+
+            return all_correct
 
     def verify_codeowners(self) -> bool:
         """Verify CODEOWNERS file exists."""
-        import os
-        path = ".github/CODEOWNERS"
-        exists = os.path.exists(path)
+        filepath = Path(".github/CODEOWNERS")
 
-        if exists:
-            with open(path) as f:
-                content = f.read()
-                if f"@{self.config.owner}" in content:
-                    print(f"✓ CODEOWNERS file exists and contains @{self.config.owner}")
-                    return True
-                else:
-                    print(f"⚠️  CODEOWNERS file exists but doesn't contain @{self.config.owner}")
-                    return False
-        else:
-            print(f"✗ CODEOWNERS file not found at {path}")
+        if filepath.exists():
+            content = filepath.read_text()
+            if f"@{self.config.owner}" in content:
+                print(f"✓ CODEOWNERS file exists and contains @{self.config.owner}")
+                return True
+            print(f"⚠️  CODEOWNERS file exists but doesn't contain @{self.config.owner}")
             return False
+        print(f"✗ CODEOWNERS file not found at {filepath}")
+        return False
 
     def verify_security_policy(self) -> bool:
         """Verify SECURITY.md exists."""
-        import os
-        path = ".github/SECURITY.md"
-        exists = os.path.exists(path)
+        filepath = Path(".github/SECURITY.md")
 
-        if exists:
-            print(f"✓ Security policy exists at {path}")
+        if filepath.exists():
+            print(f"✓ Security policy exists at {filepath}")
             return True
-        else:
-            print(f"✗ Security policy not found at {path}")
-            return False
+        print(f"✗ Security policy not found at {filepath}")
+        return False
 
     def verify_workflows(self) -> bool:
         """Verify GitHub Actions workflows exist."""
-        import os
         workflows = [
-            ".github/workflows/auto-label.yml",
-            ".github/workflows/stale.yml",
+            Path(".github/workflows/auto-label.yml"),
+            Path(".github/workflows/stale.yml"),
         ]
 
         all_exist = True
         for workflow in workflows:
-            if os.path.exists(workflow):
+            if workflow.exists():
                 print(f"✓ Workflow exists: {workflow}")
             else:
                 print(f"✗ Workflow not found: {workflow}")
@@ -583,14 +594,10 @@ def main() -> int:
         description="Configure GitHub repository with single-maintainer control"
     )
     parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Preview changes without applying them"
+        "--dry-run", action="store_true", help="Preview changes without applying them"
     )
     parser.add_argument(
-        "--verify-only",
-        action="store_true",
-        help="Only verify configuration, don't make changes"
+        "--verify-only", action="store_true", help="Only verify configuration, don't make changes"
     )
 
     args = parser.parse_args()
@@ -601,10 +608,9 @@ def main() -> int:
         verifier = RepositoryVerifier(config)
         success = verifier.verify_all()
         return 0 if success else 1
-    else:
-        configurator = GitHubConfigurator(config, dry_run=args.dry_run)
-        success = configurator.run()
-        return 0 if success else 1
+    configurator = GitHubConfigurator(config, dry_run=args.dry_run)
+    success = configurator.run()
+    return 0 if success else 1
 
 
 if __name__ == "__main__":
