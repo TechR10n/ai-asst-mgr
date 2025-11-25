@@ -33,6 +33,8 @@ repos:
           - types-toml
           - pydantic
           - sqlalchemy
+          - fastapi
+          - starlette
         args: [--strict, --ignore-missing-imports]
         exclude: ^(tests/|scripts/)
 

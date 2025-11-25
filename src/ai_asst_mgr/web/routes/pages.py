@@ -28,10 +28,11 @@ def _get_templates(request: Request) -> Jinja2Templates:
     Returns:
         Jinja2Templates instance.
     """
-    return request.app.state.app_state.templates
+    templates: Jinja2Templates = request.app.state.app_state.templates
+    return templates
 
 
-@router.get("/", response_class=HTMLResponse)  # type: ignore[misc]
+@router.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request) -> HTMLResponse:
     """Render the main dashboard page.
 
@@ -50,7 +51,7 @@ async def dashboard(request: Request) -> HTMLResponse:
     )
 
 
-@router.get("/agents", response_class=HTMLResponse)  # type: ignore[misc]
+@router.get("/agents", response_class=HTMLResponse)
 async def agents(request: Request) -> HTMLResponse:
     """Render the agents browser page.
 
@@ -69,7 +70,7 @@ async def agents(request: Request) -> HTMLResponse:
     )
 
 
-@router.get("/review", response_class=HTMLResponse)  # type: ignore[misc]
+@router.get("/review", response_class=HTMLResponse)
 async def weekly_review(request: Request) -> HTMLResponse:
     """Render the weekly review page.
 

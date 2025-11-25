@@ -7,6 +7,7 @@ templates, static files, and route handlers.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -66,7 +67,7 @@ def _register_error_handlers(app: FastAPI) -> None:
         app: The FastAPI application instance.
     """
 
-    @app.exception_handler(404)  # type: ignore[misc]
+    @app.exception_handler(404)
     async def not_found_handler(request: Request, _exc: Exception) -> HTMLResponse | JSONResponse:
         """Handle 404 Not Found errors."""
         if request.url.path.startswith("/api/"):
@@ -74,15 +75,18 @@ def _register_error_handlers(app: FastAPI) -> None:
                 status_code=404,
                 content={"error": "Not found", "path": str(request.url.path)},
             )
-        templates = request.app.state.app_state.templates
-        return templates.TemplateResponse(
-            request=request,
-            name="error.html",
-            context={"error_code": 404, "error_message": "Page not found"},
-            status_code=404,
+        templates: Jinja2Templates = request.app.state.app_state.templates
+        return cast(
+            "HTMLResponse",
+            templates.TemplateResponse(
+                request=request,
+                name="error.html",
+                context={"error_code": 404, "error_message": "Page not found"},
+                status_code=404,
+            ),
         )
 
-    @app.exception_handler(500)  # type: ignore[misc]
+    @app.exception_handler(500)
     async def server_error_handler(
         request: Request, _exc: Exception
     ) -> HTMLResponse | JSONResponse:
@@ -92,10 +96,13 @@ def _register_error_handlers(app: FastAPI) -> None:
                 status_code=500,
                 content={"error": "Internal server error"},
             )
-        templates = request.app.state.app_state.templates
-        return templates.TemplateResponse(
-            request=request,
-            name="error.html",
-            context={"error_code": 500, "error_message": "Internal server error"},
-            status_code=500,
+        templates: Jinja2Templates = request.app.state.app_state.templates
+        return cast(
+            "HTMLResponse",
+            templates.TemplateResponse(
+                request=request,
+                name="error.html",
+                context={"error_code": 500, "error_message": "Internal server error"},
+                status_code=500,
+            ),
         )

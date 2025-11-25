@@ -20,7 +20,7 @@ from ai_asst_mgr.web.services import (
 router = APIRouter(tags=["api"])
 
 
-@router.get("/stats")  # type: ignore[misc]
+@router.get("/stats")
 async def get_stats() -> dict[str, Any]:
     """Get overall statistics.
 
@@ -30,7 +30,7 @@ async def get_stats() -> dict[str, Any]:
     return get_stats_data()
 
 
-@router.get("/vendors")  # type: ignore[misc]
+@router.get("/vendors")
 async def get_vendors() -> dict[str, Any]:
     """Get vendor list with status.
 
@@ -40,7 +40,7 @@ async def get_vendors() -> dict[str, Any]:
     return get_vendors_data()
 
 
-@router.get("/coaching")  # type: ignore[misc]
+@router.get("/coaching")
 async def get_coaching() -> dict[str, Any]:
     """Get coaching insights.
 
@@ -50,7 +50,7 @@ async def get_coaching() -> dict[str, Any]:
     return get_coaching_data()
 
 
-@router.get("/agents")  # type: ignore[misc]
+@router.get("/agents")
 async def get_agents() -> dict[str, Any]:
     """Get agent list.
 
