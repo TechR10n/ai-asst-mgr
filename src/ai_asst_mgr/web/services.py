@@ -11,6 +11,8 @@ from datetime import UTC, datetime
 from typing import Any
 
 from ai_asst_mgr.coaches import ClaudeCoach, CoachBase, CodexCoach, GeminiCoach
+from ai_asst_mgr.database import DatabaseManager
+from ai_asst_mgr.database.sync import DEFAULT_DB_PATH, get_sync_status
 from ai_asst_mgr.vendors import VendorRegistry
 
 _logger = logging.getLogger(__name__)
@@ -245,5 +247,210 @@ def get_coaching_data() -> dict[str, Any]:
 
     return {
         "coaching": coaching_insights,
+        "timestamp": datetime.now(tz=UTC).isoformat(),
+    }
+
+
+def _get_db() -> DatabaseManager | None:
+    """Get database manager if database exists.
+
+    Returns:
+        DatabaseManager instance or None if not initialized.
+    """
+    if DEFAULT_DB_PATH.exists():
+        return DatabaseManager(DEFAULT_DB_PATH)
+    return None
+
+
+def get_sessions_data(
+    limit: int = 50,
+    offset: int = 0,
+    project_filter: str | None = None,
+) -> dict[str, Any]:
+    """Get session history data for the sessions page.
+
+    Args:
+        limit: Maximum number of sessions to return.
+        offset: Number of sessions to skip.
+        project_filter: Optional project path filter.
+
+    Returns:
+        Dictionary containing session history.
+    """
+    db = _get_db()
+    if not db:
+        return {
+            "title": "Sessions",
+            "sessions": [],
+            "total_sessions": 0,
+            "total_messages": 0,
+            "projects": [],
+            "sync_status": None,
+            "db_initialized": False,
+            "last_updated": datetime.now(tz=UTC).isoformat(),
+        }
+
+    # Get sync status
+    sync_status = get_sync_status(db)
+
+    # Query sessions
+    with db._connection() as conn:
+        # Get distinct projects for filter dropdown
+        cursor = conn.execute(
+            "SELECT DISTINCT project_path FROM sessions "
+            "WHERE vendor_id = 'claude' ORDER BY project_path"
+        )
+        projects = [row[0] for row in cursor.fetchall() if row[0]]
+
+        # Build query with optional filter
+        query = """
+            SELECT session_id, project_path, start_time, end_time,
+                   duration_seconds, messages_count
+            FROM sessions
+            WHERE vendor_id = 'claude'
+        """
+        params: list[Any] = []
+
+        if project_filter:
+            query += " AND project_path = ?"
+            params.append(project_filter)
+
+        query += " ORDER BY start_time DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+        cursor = conn.execute(query, params)
+        sessions = []
+        for row in cursor.fetchall():
+            sessions.append(
+                {
+                    "session_id": row[0],
+                    "project": row[1] or "Unknown",
+                    "start_time": row[2],
+                    "end_time": row[3],
+                    "duration_seconds": row[4] or 0,
+                    "messages_count": row[5] or 0,
+                }
+            )
+
+        # Get total count
+        count_query = "SELECT COUNT(*) FROM sessions WHERE vendor_id = 'claude'"
+        count_params: list[Any] = []
+        if project_filter:
+            count_query += " AND project_path = ?"
+            count_params.append(project_filter)
+        cursor = conn.execute(count_query, count_params)
+        total_sessions = cursor.fetchone()[0]
+
+    return {
+        "title": "Sessions",
+        "sessions": sessions,
+        "total_sessions": total_sessions,
+        "total_messages": sync_status.get("database_events", 0),
+        "projects": projects,
+        "current_filter": project_filter,
+        "sync_status": sync_status,
+        "db_initialized": True,
+        "last_updated": datetime.now(tz=UTC).isoformat(),
+    }
+
+
+def get_session_detail(session_id: str) -> dict[str, Any]:
+    """Get detailed information for a specific session.
+
+    Args:
+        session_id: The session ID to look up.
+
+    Returns:
+        Dictionary containing session detail.
+    """
+    db = _get_db()
+    if not db:
+        return {"error": "Database not initialized", "session": None}
+
+    with db._connection() as conn:
+        # Get session info
+        cursor = conn.execute(
+            """
+            SELECT session_id, project_path, start_time, end_time,
+                   duration_seconds, messages_count
+            FROM sessions
+            WHERE session_id = ? AND vendor_id = 'claude'
+            """,
+            (session_id,),
+        )
+        row = cursor.fetchone()
+
+        if not row:
+            return {"error": "Session not found", "session": None}
+
+        session = {
+            "session_id": row[0],
+            "project": row[1] or "Unknown",
+            "start_time": row[2],
+            "end_time": row[3],
+            "duration_seconds": row[4] or 0,
+            "messages_count": row[5] or 0,
+        }
+
+        # Get events for this session
+        cursor = conn.execute(
+            """
+            SELECT event_type, event_name, event_data, timestamp
+            FROM events
+            WHERE session_id = ? AND vendor_id = 'claude'
+            ORDER BY timestamp
+            """,
+            (session_id,),
+        )
+        events = []
+        for event_row in cursor.fetchall():
+            events.append(
+                {
+                    "event_type": event_row[0],
+                    "event_name": event_row[1],
+                    "event_data": event_row[2],
+                    "timestamp": event_row[3],
+                }
+            )
+
+    return {
+        "session": session,
+        "events": events,
+        "timestamp": datetime.now(tz=UTC).isoformat(),
+    }
+
+
+def get_sessions_stats() -> dict[str, Any]:
+    """Get session statistics for the API.
+
+    Returns:
+        Dictionary containing session statistics.
+    """
+    db = _get_db()
+    if not db:
+        return {
+            "db_initialized": False,
+            "total_sessions": 0,
+            "total_messages": 0,
+            "projects_count": 0,
+            "last_synced": None,
+            "timestamp": datetime.now(tz=UTC).isoformat(),
+        }
+
+    sync_status = get_sync_status(db)
+
+    with db._connection() as conn:
+        # Get project count
+        cursor = conn.execute(
+            "SELECT COUNT(DISTINCT project_path) FROM sessions WHERE vendor_id = 'claude'"
+        )
+        projects_count = cursor.fetchone()[0]
+
+    return {
+        "db_initialized": True,
+        "total_sessions": sync_status.get("database_sessions", 0),
+        "total_messages": sync_status.get("database_events", 0),
+        "projects_count": projects_count,
+        "last_synced": sync_status.get("last_synced_datetime"),
         "timestamp": datetime.now(tz=UTC).isoformat(),
     }

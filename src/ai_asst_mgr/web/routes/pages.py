@@ -11,7 +11,12 @@ from typing import TYPE_CHECKING
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
-from ai_asst_mgr.web.services import get_agents_data, get_dashboard_data, get_weekly_review_data
+from ai_asst_mgr.web.services import (
+    get_agents_data,
+    get_dashboard_data,
+    get_sessions_data,
+    get_weekly_review_data,
+)
 
 if TYPE_CHECKING:
     from fastapi.templating import Jinja2Templates
@@ -85,5 +90,28 @@ async def weekly_review(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(
         request=request,
         name="review.html",
+        context={"data": data},
+    )
+
+
+@router.get("/sessions", response_class=HTMLResponse)
+async def sessions(
+    request: Request,
+    project: str | None = None,
+) -> HTMLResponse:
+    """Render the session history page.
+
+    Args:
+        request: The incoming request.
+        project: Optional project filter.
+
+    Returns:
+        Rendered HTML sessions page.
+    """
+    templates = _get_templates(request)
+    data = get_sessions_data(project_filter=project)
+    return templates.TemplateResponse(
+        request=request,
+        name="sessions.html",
         context={"data": data},
     )

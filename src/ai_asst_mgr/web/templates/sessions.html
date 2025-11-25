@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+
+{% block title %}Sessions - AI Assistant Manager{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Session History</h1>
+    <p>Claude Code session activity from your history</p>
+</div>
+
+{% if not data.db_initialized %}
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Database Not Initialized</h2>
+    </div>
+    <p>The session database has not been initialized yet.</p>
+    <p style="margin-top: 1rem;">Run these commands to set up session tracking:</p>
+    <ul style="margin-top: 0.5rem; margin-left: 1.5rem;">
+        <li><code>ai-asst-mgr db init</code> - Initialize the database</li>
+        <li><code>ai-asst-mgr db sync</code> - Import Claude history</li>
+    </ul>
+</div>
+{% else %}
+
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-value">{{ data.total_sessions }}</div>
+        <div class="stat-label">Total Sessions</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">{{ data.total_messages }}</div>
+        <div class="stat-label">Total Messages</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">{{ data.projects|length }}</div>
+        <div class="stat-label">Projects</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value" style="font-size: 1rem;">
+            {% if data.sync_status and data.sync_status.last_synced_datetime %}
+            {{ data.sync_status.last_synced_datetime[:10] }}
+            {% else %}
+            Never
+            {% endif %}
+        </div>
+        <div class="stat-label">Last Synced</div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Filter by Project</h2>
+    </div>
+    <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
+        <a href="/sessions" class="filter-btn {% if not data.current_filter %}active{% endif %}">
+            All Projects
+        </a>
+        {% for project in data.projects %}
+        <a href="/sessions?project={{ project | urlencode }}"
+           class="filter-btn {% if data.current_filter == project %}active{% endif %}"
+           title="{{ project }}">
+            {{ project.split('/')[-1] }}
+        </a>
+        {% endfor %}
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Recent Sessions</h2>
+        <button class="refresh-btn"
+                hx-get="/api/sessions{% if data.current_filter %}?project={{ data.current_filter | urlencode }}{% endif %}"
+                hx-target="#sessions-table-body"
+                hx-swap="innerHTML"
+                hx-indicator="#sessions-loading">
+            Refresh
+            <span id="sessions-loading" class="htmx-indicator">...</span>
+        </button>
+    </div>
+
+    {% if data.sessions %}
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Project</th>
+                <th>Started</th>
+                <th>Duration</th>
+                <th>Messages</th>
+            </tr>
+        </thead>
+        <tbody id="sessions-table-body">
+            {% for session in data.sessions %}
+            <tr class="session-row"
+                hx-get="/api/sessions/{{ session.session_id }}"
+                hx-target="#session-detail"
+                hx-swap="innerHTML"
+                style="cursor: pointer;">
+                <td>
+                    <span class="project-name" title="{{ session.project }}">
+                        {{ session.project.split('/')[-1] }}
+                    </span>
+                </td>
+                <td>
+                    <span class="timestamp">{{ session.start_time[:16] if session.start_time else 'Unknown' }}</span>
+                </td>
+                <td>
+                    {% if session.duration_seconds > 3600 %}
+                    {{ (session.duration_seconds / 3600) | round(1) }}h
+                    {% elif session.duration_seconds > 60 %}
+                    {{ (session.duration_seconds / 60) | round(0) | int }}m
+                    {% else %}
+                    {{ session.duration_seconds | round(0) | int }}s
+                    {% endif %}
+                </td>
+                <td>{{ session.messages_count }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No sessions found{% if data.current_filter %} for this project{% endif %}.</p>
+    {% endif %}
+</div>
+
+<div id="session-detail" class="card" style="display: none;">
+    <!-- Session detail will be loaded here via HTMX -->
+</div>
+
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.body.addEventListener('htmx:afterSwap', function(evt) {
+    if (evt.detail.target.id === 'session-detail') {
+        evt.detail.target.style.display = 'block';
+        evt.detail.target.scrollIntoView({ behavior: 'smooth' });
+    }
+});
+</script>
+{% endblock %}
