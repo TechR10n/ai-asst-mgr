@@ -8,7 +8,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Phase 10 documentation and testing improvements
+
+#### Audit System (Phase 4)
+- **BaseAuditor** abstract class with AuditCheck, AuditReport, AuditSeverity, AuditCategory
+- **ClaudeAuditor**: Security checks (permissions, API keys, env files), config validation, quality assessment
+- **GeminiAuditor**: Context file analysis, GEMINI.md quality, import tracking
+- **CodexAuditor**: OpenAI-specific config validation, assistant/function quality checks
+- **DatabaseManager**: Session/event storage with SQLite, full CRUD operations
+- **MigrationManager**: Version tracking, rollback support, backup before migrations
+- **VendorSessionTracker**: Lightweight event recording with credential redaction
+- New `audit` CLI command with vendor/severity/category filters, JSON output
+
+#### Universal Agent Manager (Phase 8)
+- **UniversalAgentManager**: Cross-vendor agent discovery and management
+- **AgentInfo** dataclass for unified agent representation
+- New `agents` CLI command group with list, show, compare subcommands
+
+### Changed
+- Refactored audit CLI command into helper functions for maintainability
+- Added 176 new tests (91 audit, 56 database, 29 tracking)
+
+### Fixed
+- Closed stale issues for completed phases (#11-14, #15, #18, #20, #21)
+
+### Technical
+- **Tests**: 1,014 tests passing (up from 748)
+- **Coverage**: 93.23% overall
+- **New Modules**: audit/, database/, tracking/
 
 ---
 
