@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import builtins
+from types import ModuleType  # noqa: TC003 - Used at runtime for type annotation
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
@@ -582,6 +584,63 @@ class TestDoctorCommand:
         result = runner.invoke(app, ["doctor", "--fix"])
         assert "System Diagnostics" in result.stdout
 
+    @patch("ai_asst_mgr.cli.VendorRegistry")
+    @patch("ai_asst_mgr.cli._attempt_fixes")
+    def test_doctor_command_with_fix_flag_and_issues(
+        self, mock_attempt_fixes: MagicMock, mock_registry: MagicMock
+    ) -> None:
+        """Test doctor command with --fix flag when issues are found."""
+        # Setup mock vendor with configuration issue
+        mock_vendor = MagicMock()
+        mock_vendor.info.name = "TestVendor"
+        mock_vendor.is_installed.return_value = True
+        mock_vendor.is_configured.return_value = False
+
+        mock_registry_instance = MagicMock()
+        mock_registry_instance.get_all_vendors.return_value = {"test": mock_vendor}
+        mock_registry.return_value = mock_registry_instance
+
+        # Mock _attempt_fixes to return that 0 out of 1 issues were fixed
+        mock_attempt_fixes.return_value = 0
+
+        result = runner.invoke(app, ["doctor", "--fix"])
+        assert "System Diagnostics" in result.stdout
+        assert "Attempting automatic fixes" in result.stdout
+        assert "Fixed 0/1 issues" in result.stdout
+        assert "Some issues require manual intervention" in result.stdout
+        # Exit code is 0 because vendor not configured doesn't increment failed count
+        assert result.exit_code == 0
+        mock_attempt_fixes.assert_called_once()
+
+    @patch("ai_asst_mgr.cli.VendorRegistry")
+    @patch("ai_asst_mgr.cli._attempt_fixes")
+    def test_doctor_command_with_fix_flag_all_fixed(
+        self, mock_attempt_fixes: MagicMock, mock_registry: MagicMock
+    ) -> None:
+        """Test doctor command with --fix flag when all issues are fixed."""
+        # Setup mock vendor with configuration issue
+        mock_vendor = MagicMock()
+        mock_vendor.info.name = "TestVendor"
+        mock_vendor.is_installed.return_value = True
+        mock_vendor.is_configured.return_value = False
+
+        mock_registry_instance = MagicMock()
+        mock_registry_instance.get_all_vendors.return_value = {"test": mock_vendor}
+        mock_registry.return_value = mock_registry_instance
+
+        # Mock _attempt_fixes to return that 1 out of 1 issues were fixed
+        mock_attempt_fixes.return_value = 1
+
+        result = runner.invoke(app, ["doctor", "--fix"])
+        assert "System Diagnostics" in result.stdout
+        assert "Attempting automatic fixes" in result.stdout
+        assert "Fixed 1/1 issues" in result.stdout
+        # Should NOT show manual intervention message when all are fixed
+        assert "Some issues require manual intervention" not in result.stdout
+        # Exit code is 0 because vendor not configured doesn't increment failed count
+        assert result.exit_code == 0
+        mock_attempt_fixes.assert_called_once()
+
     @patch("sys.version_info", (3, 13, 0, "final", 0))
     def test_doctor_command_detects_old_python_version(self) -> None:
         """Test doctor command detects Python version below minimum."""
@@ -605,6 +664,30 @@ class TestDoctorCommand:
         result = runner.invoke(app, ["doctor"])
         assert "Vendor Installations" in result.stdout
 
+    @patch("ai_asst_mgr.cli.VendorRegistry")
+    def test_doctor_command_detects_vendor_installed_but_not_configured(
+        self, mock_registry: MagicMock
+    ) -> None:
+        """Test doctor command detects when vendor is installed but not configured."""
+        mock_vendor = MagicMock()
+        mock_vendor.info.name = "TestVendor"
+        mock_vendor.is_installed.return_value = True
+        mock_vendor.is_configured.return_value = False
+
+        mock_registry_instance = MagicMock()
+        mock_registry_instance.get_all_vendors.return_value = {"test": mock_vendor}
+        mock_registry.return_value = mock_registry_instance
+
+        result = runner.invoke(app, ["doctor"])
+        assert "Vendor Installations" in result.stdout
+        assert "TestVendor" in result.stdout
+        assert "Installed" in result.stdout
+        assert "Not configured" in result.stdout or "not configured" in result.stdout
+        # Exit code will be 0 because the vendor not being configured is just a warning,
+        # not a failure (it creates an issue entry but doesn't increment failed count)
+        # The actual test is that the issue is detected and shown
+        assert result.exit_code == 0
+
     def test_doctor_command_exit_code_success_when_all_checks_pass(self) -> None:
         """Test doctor command returns exit code 0 when all checks pass."""
         # This test depends on the actual system state
@@ -622,13 +705,33 @@ class TestDoctorCommand:
         assert "System Diagnostics" in result.stdout
 
     def test_doctor_command_detects_missing_dependency(self) -> None:
-        """Test doctor command detects missing dependencies."""
-        # This test validates the ImportError handling path exists
-        # In practice, if dependencies are missing, the CLI won't import
-        # So we just verify the code handles ImportError properly
-        # The actual path is tested by attempting to import each package
-        result = runner.invoke(app, ["doctor"])
-        assert "Dependencies" in result.stdout
+        """Test doctor command detects missing dependencies by testing ImportError path."""
+        # Create a mock that will raise ImportError for a specific package
+        real_import = builtins.__import__
+
+        def custom_import(
+            name: str,
+            globals: dict[str, object] | None = None,
+            locals: dict[str, object] | None = None,
+            fromlist: tuple[str, ...] = (),
+            level: int = 0,
+        ) -> ModuleType:
+            if name == "httpx":
+                error_msg = f"No module named '{name}'"
+                raise ImportError(error_msg)
+            return real_import(name, globals, locals, fromlist, level)
+
+        # Patch __import__ in builtins
+        original_import = builtins.__import__
+        try:
+            builtins.__import__ = custom_import  # type: ignore[assignment]
+            result = runner.invoke(app, ["doctor"])
+            assert "Dependencies" in result.stdout
+            assert "httpx" in result.stdout.lower()
+            assert "not found" in result.stdout.lower()
+            assert result.exit_code == 1
+        finally:
+            builtins.__import__ = original_import
 
     def test_doctor_command_checks_database_as_directory(self, tmp_path: Path) -> None:
         """Test doctor command handles database path being a directory."""
@@ -833,3 +936,29 @@ class TestDoctorHelperFunctions:
         # Currently no auto-fixes are fully implemented
         assert result >= 0
         assert result <= len(issues)
+
+    def test_attempt_fixes_with_directory_not_found_issue(self) -> None:
+        """Test _attempt_fixes handles directory not found but doesn't auto-fix."""
+        issues = [
+            {
+                "category": "Configuration",
+                "issue": "Configuration directory not found",
+                "remediation": "Create directory: mkdir -p ~/.config/ai-asst-mgr",
+            }
+        ]
+        result = _attempt_fixes(issues)
+        # Directory creation not auto-fixed for safety
+        assert result == 0
+
+    def test_attempt_fixes_with_other_category(self) -> None:
+        """Test _attempt_fixes with issue that doesn't match any auto-fix patterns."""
+        issues = [
+            {
+                "category": "Other",
+                "issue": "Some other issue",
+                "remediation": "Manual fix required",
+            }
+        ]
+        result = _attempt_fixes(issues)
+        # No auto-fix for unrecognized patterns
+        assert result == 0
