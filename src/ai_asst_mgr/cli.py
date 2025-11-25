@@ -23,6 +23,8 @@ from ai_asst_mgr.adapters.base import VendorStatus
 from ai_asst_mgr.audit import ClaudeAuditor, CodexAuditor, GeminiAuditor
 from ai_asst_mgr.capabilities import AgentType, UniversalAgentManager
 from ai_asst_mgr.coaches import ClaudeCoach, CodexCoach, GeminiCoach, Priority
+from ai_asst_mgr.database import DatabaseManager
+from ai_asst_mgr.database.sync import get_sync_status, sync_history_to_db
 from ai_asst_mgr.operations import (
     BackupManager,
     MergeStrategy,
@@ -3246,7 +3248,139 @@ def schedule_remove(
 
 
 # =============================================================================
-# Serve Command - Web Dashboard
+# Database Management Commands
+# =============================================================================
+
+db_app = typer.Typer(help="Manage the session tracking database")
+app.add_typer(db_app, name="db")
+
+DEFAULT_DB_PATH = Path.home() / "Data" / "claude-sessions" / "sessions.db"
+
+
+@db_app.command("init")
+def db_init(
+    force: Annotated[
+        bool,
+        typer.Option("--force", "-f", help="Overwrite existing database"),
+    ] = False,
+) -> None:
+    """Initialize a fresh session tracking database.
+
+    Creates a new SQLite database with the full schema for tracking
+    Claude Code sessions, events, and analytics.
+
+    Examples:
+        ai-asst-mgr db init           # Initialize database
+        ai-asst-mgr db init --force   # Overwrite existing database
+    """
+    if DEFAULT_DB_PATH.exists() and not force:
+        console.print(
+            f"[yellow]Database already exists at {DEFAULT_DB_PATH}[/yellow]\n"
+            "Use --force to overwrite."
+        )
+        raise typer.Exit(1)
+
+    # Ensure parent directory exists
+    DEFAULT_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    # Delete existing if force
+    if DEFAULT_DB_PATH.exists():
+        DEFAULT_DB_PATH.unlink()
+        console.print("[dim]Deleted existing database[/dim]")
+
+    # Initialize new database
+    db = DatabaseManager(DEFAULT_DB_PATH)
+    db.initialize()
+
+    console.print(
+        Panel.fit(
+            f"[bold green]Database initialized successfully![/bold green]\n\n"
+            f"Location: [cyan]{DEFAULT_DB_PATH}[/cyan]\n\n"
+            "Run [bold]ai-asst-mgr db sync[/bold] to import Claude history.",
+            title="Database Ready",
+            border_style="green",
+        )
+    )
+
+
+@db_app.command("sync")
+def db_sync(
+    full: Annotated[
+        bool,
+        typer.Option("--full", "-f", help="Full sync (ignore last sync state)"),
+    ] = False,
+) -> None:
+    """Sync Claude Code history to the database.
+
+    Imports session data from ~/.claude/history.jsonl into the database.
+    By default, only imports entries since the last sync.
+
+    Examples:
+        ai-asst-mgr db sync         # Sync new entries only
+        ai-asst-mgr db sync --full  # Full sync (re-import all)
+    """
+    if not DEFAULT_DB_PATH.exists():
+        console.print("[red]Database not found![/red]\nRun [bold]ai-asst-mgr db init[/bold] first.")
+        raise typer.Exit(1)
+
+    db = DatabaseManager(DEFAULT_DB_PATH)
+
+    console.print("[dim]Syncing Claude history to database...[/dim]")
+    result = sync_history_to_db(db, full_sync=full)
+
+    if result.errors:
+        console.print(f"[yellow]Completed with {len(result.errors)} errors[/yellow]")
+        for error in result.errors[:5]:
+            console.print(f"  [red]• {error}[/red]")
+    else:
+        console.print(
+            Panel.fit(
+                f"[bold green]Sync completed![/bold green]\n\n"
+                f"Sessions imported: [cyan]{result.sessions_imported}[/cyan]\n"
+                f"Messages imported: [cyan]{result.messages_imported}[/cyan]\n"
+                f"Sessions skipped:  [dim]{result.sessions_skipped}[/dim]",
+                title="Sync Results",
+                border_style="green",
+            )
+        )
+
+
+@db_app.command("status")
+def db_status() -> None:
+    """Show database sync status and statistics.
+
+    Displays information about the database, last sync time,
+    and record counts.
+
+    Examples:
+        ai-asst-mgr db status
+    """
+    if not DEFAULT_DB_PATH.exists():
+        console.print("[red]Database not found![/red]\nRun [bold]ai-asst-mgr db init[/bold] first.")
+        raise typer.Exit(1)
+
+    db = DatabaseManager(DEFAULT_DB_PATH)
+    status = get_sync_status(db)
+
+    table = Table(title="Database Status", show_header=False)
+    table.add_column("Property", style="cyan")
+    table.add_column("Value", style="white")
+
+    table.add_row("Database Path", str(DEFAULT_DB_PATH))
+    table.add_row("Sessions in DB", str(status["database_sessions"]))
+    table.add_row("Events in DB", str(status["database_events"]))
+    table.add_row("History File", status["history_file_path"])
+    table.add_row("History Entries", str(status["history_file_entries"]))
+    table.add_row(
+        "Last Synced",
+        status["last_synced_datetime"] or "[dim]Never[/dim]",
+    )
+
+    console.print(table)
+
+
+# =============================================================================
+# Web Dashboard Command
 # =============================================================================
 
 
