@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import re
 from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
 from ai_asst_mgr.web import create_app
+
+
+def _strip_ansi(text: str) -> str:
+    """Remove ANSI escape codes from text."""
+    ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
+    return ansi_escape.sub("", text)
 
 
 class TestCreateApp:
@@ -383,9 +390,10 @@ class TestCLIServeCommand:
         from ai_asst_mgr.cli import app
 
         runner = CliRunner()
-        result = runner.invoke(app, ["serve", "--help"], color=False)
+        result = runner.invoke(app, ["serve", "--help"])
+        output = _strip_ansi(result.output)
         assert result.exit_code == 0
-        assert "Start the web dashboard server" in result.output
+        assert "Start the web dashboard server" in output
 
     def test_serve_command_has_host_option(self) -> None:
         """Test that serve command has --host option."""
@@ -394,8 +402,9 @@ class TestCLIServeCommand:
         from ai_asst_mgr.cli import app
 
         runner = CliRunner()
-        result = runner.invoke(app, ["serve", "--help"], color=False)
-        assert "--host" in result.output
+        result = runner.invoke(app, ["serve", "--help"])
+        output = _strip_ansi(result.output)
+        assert "--host" in output
 
     def test_serve_command_has_port_option(self) -> None:
         """Test that serve command has --port option."""
@@ -404,8 +413,9 @@ class TestCLIServeCommand:
         from ai_asst_mgr.cli import app
 
         runner = CliRunner()
-        result = runner.invoke(app, ["serve", "--help"], color=False)
-        assert "--port" in result.output
+        result = runner.invoke(app, ["serve", "--help"])
+        output = _strip_ansi(result.output)
+        assert "--port" in output
 
     def test_serve_command_has_reload_option(self) -> None:
         """Test that serve command has --reload option."""
@@ -414,5 +424,6 @@ class TestCLIServeCommand:
         from ai_asst_mgr.cli import app
 
         runner = CliRunner()
-        result = runner.invoke(app, ["serve", "--help"], color=False)
-        assert "--reload" in result.output
+        result = runner.invoke(app, ["serve", "--help"])
+        output = _strip_ansi(result.output)
+        assert "--reload" in output
