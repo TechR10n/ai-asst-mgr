@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
+import uvicorn
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -3242,6 +3243,64 @@ def schedule_remove(
     else:
         console.print("\n[red]✗ Failed to remove backup schedule[/red]")
         raise typer.Exit(code=1)
+
+
+# =============================================================================
+# Serve Command - Web Dashboard
+# =============================================================================
+
+
+@app.command()
+def serve(
+    host: Annotated[
+        str,
+        typer.Option("--host", "-h", help="Host to bind to"),
+    ] = "127.0.0.1",
+    port: Annotated[
+        int,
+        typer.Option("--port", "-p", help="Port to bind to"),
+    ] = 8080,
+    reload: Annotated[
+        bool,
+        typer.Option("--reload", "-r", help="Enable auto-reload for development"),
+    ] = False,
+) -> None:
+    """Start the web dashboard server.
+
+    Starts a FastAPI server that provides a web interface for viewing
+    AI assistant statistics, coaching insights, and agent management.
+
+    Examples:
+        ai-asst-mgr serve                    # Start on localhost:8080
+        ai-asst-mgr serve --port 3000        # Use custom port
+        ai-asst-mgr serve --host 0.0.0.0     # Bind to all interfaces
+        ai-asst-mgr serve --reload           # Enable auto-reload
+
+    Args:
+        host: Host address to bind to.
+        port: Port number to bind to.
+        reload: Enable auto-reload for development.
+    """
+    console.print(
+        Panel.fit(
+            f"[bold blue]AI Assistant Manager - Web Dashboard[/bold blue]\n\n"
+            f"Starting server at [green]http://{host}:{port}[/green]\n\n"
+            f"Press [bold]Ctrl+C[/bold] to stop",
+            border_style="blue",
+        )
+    )
+
+    try:
+        uvicorn.run(
+            "ai_asst_mgr.web:create_app",
+            host=host,
+            port=port,
+            reload=reload,
+            factory=True,
+            log_level="info",
+        )
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Server stopped[/yellow]")
 
 
 def main() -> None:

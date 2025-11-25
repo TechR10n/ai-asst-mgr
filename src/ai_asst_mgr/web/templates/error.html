@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+
+{% block title %}Error {{ error_code }} - AI Assistant Manager{% endblock %}
+
+{% block content %}
+<div class="error-container">
+    <div class="error-code">{{ error_code }}</div>
+    <div class="error-message">{{ error_message }}</div>
+    <a href="/" class="error-link">Return to Dashboard</a>
+</div>
+{% endblock %}

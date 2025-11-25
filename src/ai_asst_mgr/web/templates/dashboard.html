@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - AI Assistant Manager{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Dashboard</h1>
+    <p>Overview of your AI assistant configurations</p>
+</div>
+
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-value">{{ data.total_vendors }}</div>
+        <div class="stat-label">Total Vendors</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">{{ data.installed_count }}</div>
+        <div class="stat-label">Installed</div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Vendors</h2>
+        <button class="refresh-btn"
+                hx-get="/api/vendors"
+                hx-target="#vendors-list"
+                hx-swap="innerHTML"
+                hx-indicator="#loading-indicator">
+            Refresh
+            <span id="loading-indicator" class="htmx-indicator">...</span>
+        </button>
+    </div>
+    <div id="vendors-list" class="vendor-list">
+        {% for vendor in data.vendors %}
+        <div class="vendor-item">
+            <div class="vendor-info">
+                <div>
+                    <div class="vendor-name">{{ vendor.name }}</div>
+                    <div class="vendor-id">{{ vendor.id }}</div>
+                </div>
+            </div>
+            <div>
+                {% if vendor.installed %}
+                <span class="badge badge-success">Installed</span>
+                {% else %}
+                <span class="badge badge-warning">Not Installed</span>
+                {% endif %}
+                {% if vendor.config_exists %}
+                <span class="badge badge-success">Configured</span>
+                {% else %}
+                <span class="badge badge-warning">Not Configured</span>
+                {% endif %}
+            </div>
+        </div>
+        {% else %}
+        <p>No vendors found.</p>
+        {% endfor %}
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Quick Actions</h2>
+    </div>
+    <p>Use the CLI to manage your AI assistants:</p>
+    <ul style="margin-top: 1rem; margin-left: 1.5rem;">
+        <li><code>ai-asst-mgr status</code> - Check vendor status</li>
+        <li><code>ai-asst-mgr backup</code> - Backup configurations</li>
+        <li><code>ai-asst-mgr sync</code> - Sync configurations</li>
+        <li><code>ai-asst-mgr agents list</code> - List all agents</li>
+    </ul>
+</div>
+{% endblock %}

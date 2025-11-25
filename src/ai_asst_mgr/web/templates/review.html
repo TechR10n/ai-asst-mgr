@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+
+{% block title %}Weekly Review - AI Assistant Manager{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Weekly Review</h1>
+    <p>Summary of your AI assistant activity this week</p>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">{{ data.period }}</h2>
+        <button class="refresh-btn"
+                hx-get="/api/stats"
+                hx-target="#review-stats"
+                hx-swap="innerHTML">
+            Refresh
+        </button>
+    </div>
+
+    <div id="review-stats">
+        <div class="stats-grid" style="margin-bottom: 0;">
+            <div class="stat-card">
+                <div class="stat-value">{{ data.vendors | length }}</div>
+                <div class="stat-label">Active Vendors</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Vendor Status</h2>
+    </div>
+
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Vendor</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for vendor in data.vendors %}
+            <tr>
+                <td>
+                    <div class="vendor-name">{{ vendor.name }}</div>
+                    <div class="vendor-id">{{ vendor.id }}</div>
+                </td>
+                <td>
+                    {% if vendor.status == 'active' %}
+                    <span class="badge badge-success">Active</span>
+                    {% else %}
+                    <span class="badge badge-warning">Inactive</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="2" style="text-align: center; color: var(--text-muted);">
+                    No vendor activity this week.
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Recommendations</h2>
+    </div>
+    <ul style="margin-left: 1.5rem;">
+        <li>Run <code>ai-asst-mgr backup</code> to backup your configurations</li>
+        <li>Check coaching insights with <code>ai-asst-mgr coach</code></li>
+        <li>Review audit logs with <code>ai-asst-mgr audit</code></li>
+    </ul>
+</div>
+{% endblock %}
