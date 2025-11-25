@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from pathlib import Path
 
-SCHEMA_VERSION = "1.1.0"
+SCHEMA_VERSION = "1.2.0"
 
 # Schema metadata table
 SCHEMA_METADATA_SQL = """
@@ -184,6 +184,26 @@ CREATE TABLE IF NOT EXISTS github_commits (
 );
 """
 
+# GitHub activity table (tracks all GitHub operations)
+GITHUB_ACTIVITY_SQL = """
+CREATE TABLE IF NOT EXISTS github_activity (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    activity_id TEXT NOT NULL UNIQUE,
+    timestamp TEXT NOT NULL,
+    vendor_id TEXT NOT NULL,
+    session_id TEXT,
+    operation_type TEXT NOT NULL,
+    repo_owner TEXT NOT NULL,
+    repo_name TEXT NOT NULL,
+    resource_id INTEGER,
+    resource_url TEXT,
+    metadata TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (vendor_id) REFERENCES vendor_profiles(vendor_id),
+    FOREIGN KEY (session_id) REFERENCES sessions(session_id)
+);
+"""
+
 # Indexes
 INDEXES_SQL = """
 CREATE INDEX IF NOT EXISTS idx_sessions_vendor ON sessions(vendor_id);
@@ -201,6 +221,11 @@ CREATE INDEX IF NOT EXISTS idx_capabilities_type ON capabilities(capability_type
 CREATE INDEX IF NOT EXISTS idx_github_commits_repo ON github_commits(repo);
 CREATE INDEX IF NOT EXISTS idx_github_commits_vendor ON github_commits(vendor_id);
 CREATE INDEX IF NOT EXISTS idx_github_commits_date ON github_commits(committed_at);
+CREATE INDEX IF NOT EXISTS idx_github_activity_vendor ON github_activity(vendor_id);
+CREATE INDEX IF NOT EXISTS idx_github_activity_repo ON github_activity(repo_owner, repo_name);
+CREATE INDEX IF NOT EXISTS idx_github_activity_session ON github_activity(session_id);
+CREATE INDEX IF NOT EXISTS idx_github_activity_type ON github_activity(operation_type);
+CREATE INDEX IF NOT EXISTS idx_github_activity_timestamp ON github_activity(timestamp);
 """
 
 # Views
@@ -326,6 +351,19 @@ WHERE vendor_id IS NOT NULL
 GROUP BY vendor_id;
 """
 
+GITHUB_ACTIVITY_STATS_VIEW_SQL = """
+CREATE VIEW IF NOT EXISTS v_github_activity_stats AS
+SELECT
+    vendor_id,
+    operation_type,
+    COUNT(*) as operation_count,
+    COUNT(DISTINCT repo_owner || '/' || repo_name) as repo_count,
+    MIN(timestamp) as first_activity,
+    MAX(timestamp) as last_activity
+FROM github_activity
+GROUP BY vendor_id, operation_type;
+"""
+
 # Default vendor profiles
 DEFAULT_VENDORS_SQL = """
 INSERT OR IGNORE INTO vendor_profiles (vendor_id, display_name, config_dir)
@@ -355,6 +393,7 @@ def create_schema_sql() -> str:
             COACHING_INSIGHTS_SQL,
             CAPABILITIES_SQL,
             GITHUB_COMMITS_SQL,
+            GITHUB_ACTIVITY_SQL,
             INDEXES_SQL,
             DAILY_USAGE_VIEW_SQL,
             VENDOR_STATS_VIEW_SQL,
@@ -365,6 +404,7 @@ def create_schema_sql() -> str:
             CAPABILITY_SUMMARY_VIEW_SQL,
             COACHING_STATUS_VIEW_SQL,
             GITHUB_VENDOR_STATS_VIEW_SQL,
+            GITHUB_ACTIVITY_STATS_VIEW_SQL,
             DEFAULT_VENDORS_SQL,
         ]
     )
@@ -482,6 +522,7 @@ class SchemaManager:
             "coaching_insights",
             "capabilities",
             "github_commits",
+            "github_activity",
         }
 
         expected_views = {
@@ -494,6 +535,7 @@ class SchemaManager:
             "v_capability_summary",
             "v_coaching_status",
             "v_github_vendor_stats",
+            "v_github_activity_stats",
         }
 
         actual_tables = set(self.get_tables())

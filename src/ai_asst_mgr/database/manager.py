@@ -133,6 +133,22 @@ class GitHubCommitRecord:
     created_at: str
 
 
+@dataclass
+class GitHubActivityRecord:
+    """A GitHub activity record from the database."""
+
+    activity_id: str
+    timestamp: str
+    vendor_id: str
+    session_id: str | None
+    operation_type: str
+    repo_owner: str
+    repo_name: str
+    resource_id: int | None
+    resource_url: str | None
+    metadata: dict[str, Any] | None
+
+
 class DatabaseManager:
     """Manages database operations for session tracking.
 
@@ -842,7 +858,7 @@ class DatabaseManager:
                     SELECT
                         repo,
                         COUNT(*) as total_commits,
-                        SUM(CASE WHEN ai_vendor IS NOT NULL THEN 1 ELSE 0 END) as ai_commits,
+                        SUM(CASE WHEN vendor_id IS NOT NULL THEN 1 ELSE 0 END) as ai_commits,
                         MAX(committed_at) as last_commit
                     FROM github_commits
                     GROUP BY repo
@@ -900,3 +916,205 @@ class DatabaseManager:
         except sqlite3.OperationalError:
             # Table doesn't exist (old schema)
             return None
+
+    # GitHub activity methods
+
+    def record_github_activity(
+        self,
+        activity_id: str,
+        timestamp: str,
+        vendor_id: str,
+        operation_type: str,
+        repo_owner: str,
+        repo_name: str,
+        session_id: str | None = None,
+        resource_id: int | None = None,
+        resource_url: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> bool:
+        """Record a GitHub activity event.
+
+        Args:
+            activity_id: Unique identifier for the activity.
+            timestamp: ISO format timestamp of the activity.
+            vendor_id: Vendor identifier (claude, gemini, openai).
+            operation_type: Type of operation (issue_create, pr_create, pr_merge, etc.).
+            repo_owner: Repository owner (username or org).
+            repo_name: Repository name.
+            session_id: Optional session ID to link activity to a session.
+            resource_id: Optional resource ID (issue/PR number).
+            resource_url: Optional URL to the resource.
+            metadata: Optional additional context as a dictionary.
+
+        Returns:
+            True if activity was recorded, False on error.
+        """
+        try:
+            with self._connection() as conn:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO github_activity (
+                        activity_id, timestamp, vendor_id, session_id, operation_type,
+                        repo_owner, repo_name, resource_id, resource_url, metadata
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        activity_id,
+                        timestamp,
+                        vendor_id,
+                        session_id,
+                        operation_type,
+                        repo_owner,
+                        repo_name,
+                        resource_id,
+                        resource_url,
+                        json.dumps(metadata) if metadata else None,
+                    ),
+                )
+                conn.commit()
+        except sqlite3.Error:
+            return False
+        else:
+            return True
+
+    def get_github_activities(
+        self,
+        vendor_id: str | None = None,
+        repo: str | None = None,
+        operation_type: str | None = None,
+        session_id: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[GitHubActivityRecord]:
+        """Query GitHub activities with optional filters.
+
+        Args:
+            vendor_id: Filter by AI vendor.
+            repo: Filter by repository (format: owner/name).
+            operation_type: Filter by operation type.
+            session_id: Filter by session ID.
+            limit: Maximum number of activities to return.
+            offset: Number of activities to skip (for pagination).
+
+        Returns:
+            List of GitHubActivityRecord objects, newest first.
+            Returns empty list if the github_activity table doesn't exist.
+        """
+        try:
+            query = "SELECT * FROM github_activity WHERE 1=1"
+            params: list[Any] = []
+
+            if vendor_id:
+                query += " AND vendor_id = ?"
+                params.append(vendor_id)
+
+            if repo:
+                parts = repo.split("/", 1)
+                if len(parts) == 2:
+                    query += " AND repo_owner = ? AND repo_name = ?"
+                    params.extend(parts)
+
+            if operation_type:
+                query += " AND operation_type = ?"
+                params.append(operation_type)
+
+            if session_id:
+                query += " AND session_id = ?"
+                params.append(session_id)
+
+            query += " ORDER BY timestamp DESC LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+
+            with self._connection() as conn:
+                cursor = conn.execute(query, params)
+                rows = cursor.fetchall()
+
+            return [
+                GitHubActivityRecord(
+                    activity_id=row["activity_id"],
+                    timestamp=row["timestamp"],
+                    vendor_id=row["vendor_id"],
+                    session_id=row["session_id"],
+                    operation_type=row["operation_type"],
+                    repo_owner=row["repo_owner"],
+                    repo_name=row["repo_name"],
+                    resource_id=row["resource_id"],
+                    resource_url=row["resource_url"],
+                    metadata=json.loads(row["metadata"]) if row["metadata"] else None,
+                )
+                for row in rows
+            ]
+        except sqlite3.OperationalError:
+            # Table doesn't exist (old schema)
+            return []
+
+    def get_github_activity_stats(self) -> list[dict[str, Any]]:
+        """Get aggregated GitHub activity statistics by vendor and operation type.
+
+        Returns:
+            List of dicts with vendor_id, operation_type, operation_count,
+            repo_count, first_activity, and last_activity.
+            Returns empty list if the github_activity table doesn't exist.
+        """
+        try:
+            with self._connection() as conn:
+                cursor = conn.execute(
+                    """
+                    SELECT
+                        vendor_id,
+                        operation_type,
+                        operation_count,
+                        repo_count,
+                        first_activity,
+                        last_activity
+                    FROM v_github_activity_stats
+                    ORDER BY vendor_id, operation_type
+                    """
+                )
+                rows = cursor.fetchall()
+
+            return [dict(row) for row in rows]
+        except sqlite3.OperationalError:
+            # View doesn't exist (old schema)
+            return []
+
+    def get_github_activity_by_session(self, session_id: str) -> list[GitHubActivityRecord]:
+        """Get all GitHub activities for a specific session.
+
+        Args:
+            session_id: The session identifier.
+
+        Returns:
+            List of GitHubActivityRecord objects for the session, chronological order.
+            Returns empty list if the github_activity table doesn't exist.
+        """
+        try:
+            with self._connection() as conn:
+                cursor = conn.execute(
+                    """
+                    SELECT * FROM github_activity
+                    WHERE session_id = ?
+                    ORDER BY timestamp ASC
+                    """,
+                    (session_id,),
+                )
+                rows = cursor.fetchall()
+
+            return [
+                GitHubActivityRecord(
+                    activity_id=row["activity_id"],
+                    timestamp=row["timestamp"],
+                    vendor_id=row["vendor_id"],
+                    session_id=row["session_id"],
+                    operation_type=row["operation_type"],
+                    repo_owner=row["repo_owner"],
+                    repo_name=row["repo_name"],
+                    resource_id=row["resource_id"],
+                    resource_url=row["resource_url"],
+                    metadata=json.loads(row["metadata"]) if row["metadata"] else None,
+                )
+                for row in rows
+            ]
+        except sqlite3.OperationalError:
+            # Table doesn't exist (old schema)
+            return []

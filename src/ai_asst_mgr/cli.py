@@ -31,7 +31,10 @@ from ai_asst_mgr.operations import (
     RestoreManager,
     SyncManager,
 )
-from ai_asst_mgr.operations.github_parser import GitLogParser, find_git_repos
+from ai_asst_mgr.operations.github_parser import (
+    GitLogParser,
+    find_git_repos,
+)
 from ai_asst_mgr.platform import (
     IntervalType,
     ScheduleInfo,
@@ -2057,7 +2060,7 @@ def _restore_full(
 
 
 @app.command()
-def sync(  # noqa: PLR0913 - Typer CLI requires individual parameters for proper flag generation
+def sync(
     repo_url: Annotated[
         str,
         typer.Argument(help="Git repository URL to sync from"),
@@ -3669,6 +3672,283 @@ def github_repos() -> None:
             str(ai_count),
             f"{ai_pct:.1f}%",
             last_commit_str,
+        )
+
+    console.print(table)
+
+
+@github_app.command("attribution")
+def github_attribution(
+    repo: Annotated[
+        str | None,
+        typer.Argument(help="Repository (owner/repo format)"),
+    ] = None,
+    pr: Annotated[
+        int | None,
+        typer.Option("--pr", "-p", help="PR number to analyze"),
+    ] = None,
+    issue: Annotated[
+        int | None,
+        typer.Option("--issue", "-i", help="Issue number to analyze"),
+    ] = None,
+    summary: Annotated[
+        bool,
+        typer.Option("--summary", "-s", help="Show summary by vendor"),
+    ] = False,
+) -> None:
+    """Show AI vendor attribution for repository resources.
+
+    Analyzes commits, PRs, and issues to identify AI-generated content
+    and attribute it to specific AI vendors (Claude, Gemini, OpenAI).
+
+    Examples:
+        ai-asst-mgr github attribution owner/repo
+        ai-asst-mgr github attribution owner/repo --pr 123
+        ai-asst-mgr github attribution owner/repo --summary
+    """
+    if not DEFAULT_DB_PATH.exists():
+        console.print("[red]Database not found![/red]\nRun [bold]ai-asst-mgr db init[/bold] first.")
+        raise typer.Exit(1)
+
+    # Determine repository to query
+    if repo:
+        repo_name = repo
+    else:
+        # Try to get repo from current directory
+        parser = GitLogParser()
+        try:
+            repo_path = Path.cwd()
+            repo_name = parser._get_repo_name(repo_path)
+        except Exception:
+            console.print("[red]Not in a git repo. Specify repository: owner/repo[/red]")
+            raise typer.Exit(1) from None
+
+    db = DatabaseManager(DEFAULT_DB_PATH)
+
+    # Query commits for this repository
+    commits = db.get_github_commits(repo=repo_name, limit=1000)
+
+    if not commits:
+        console.print(f"[yellow]No commits found for repository: {repo_name}[/yellow]")
+        console.print("Run [bold]ai-asst-mgr github sync[/bold] to import commits.")
+        raise typer.Exit(0)
+
+    # Filter by PR or issue if specified
+    if pr is not None:
+        # Filter commits that mention the PR number
+        pr_pattern = f"#{pr}"
+        commits = [c for c in commits if pr_pattern in c.message or f"PR {pr}" in c.message]
+        if not commits:
+            console.print(f"[yellow]No commits found for PR #{pr} in {repo_name}[/yellow]")
+            raise typer.Exit(0)
+
+    if issue is not None:
+        # Filter commits that mention the issue number
+        issue_pattern = f"#{issue}"
+        commits = [
+            c for c in commits if issue_pattern in c.message or f"Issue {issue}" in c.message
+        ]
+        if not commits:
+            console.print(f"[yellow]No commits found for issue #{issue} in {repo_name}[/yellow]")
+            raise typer.Exit(0)
+
+    # Show summary or detailed list
+    if summary:
+        # Calculate vendor breakdown
+        total = len(commits)
+        vendor_counts: dict[str, int] = {}
+        for commit in commits:
+            if commit.vendor_id:
+                vendor_counts[commit.vendor_id] = vendor_counts.get(commit.vendor_id, 0) + 1
+            else:
+                vendor_counts["manual"] = vendor_counts.get("manual", 0) + 1
+
+        # Create summary table
+        table = Table(title=f"Attribution Summary: {repo_name}", show_header=True)
+        table.add_column("Vendor", style="cyan", width=15)
+        table.add_column("Commits", justify="right", width=10)
+        table.add_column("Percentage", justify="right", width=12)
+
+        # Sort by count descending
+        for vendor, count in sorted(vendor_counts.items(), key=lambda x: x[1], reverse=True):
+            pct = count / total * 100
+            if vendor == "claude":
+                vendor_display = "[magenta]Claude[/magenta]"
+            elif vendor == "gemini":
+                vendor_display = "[blue]Gemini[/blue]"
+            elif vendor == "openai":
+                vendor_display = "[green]OpenAI[/green]"
+            else:
+                vendor_display = "[dim]Manual[/dim]"
+
+            table.add_row(vendor_display, str(count), f"{pct:.1f}%")
+
+        # Add total row
+        table.add_row("[bold]Total[/bold]", f"[bold]{total}[/bold]", "[bold]100.0%[/bold]")
+        console.print(table)
+    else:
+        # Show detailed commit list
+        title = f"Commits: {repo_name}"
+        if pr is not None:
+            title += f" (PR #{pr})"
+        if issue is not None:
+            title += f" (Issue #{issue})"
+
+        table = Table(title=title, show_header=True)
+        table.add_column("SHA", style="cyan", width=7)
+        table.add_column("Message", width=50)
+        table.add_column("Vendor", width=10)
+        table.add_column("Date", style="dim", width=16)
+
+        for commit in commits[:50]:  # Limit to 50 for display
+            # Format vendor badge
+            if commit.vendor_id == "claude":
+                vendor_badge = "[magenta]Claude[/magenta]"
+            elif commit.vendor_id == "gemini":
+                vendor_badge = "[blue]Gemini[/blue]"
+            elif commit.vendor_id == "openai":
+                vendor_badge = "[green]OpenAI[/green]"
+            else:
+                vendor_badge = "[dim]Manual[/dim]"
+
+            # Truncate message to first line
+            first_line = commit.message.split("\n")[0]
+            message = first_line[:48]
+            if len(first_line) > 48:
+                message += "..."
+
+            table.add_row(
+                commit.sha[:7],
+                message,
+                vendor_badge,
+                commit.committed_at[:16],
+            )
+
+        console.print(table)
+        if len(commits) > 50:
+            console.print(f"[dim]Showing 50 of {len(commits)} commits. Use --summary.[/dim]")
+
+
+@github_app.command("activity")
+def github_activity(
+    session: Annotated[
+        str | None,
+        typer.Option("--session", "-s", help="Filter by session ID"),
+    ] = None,
+    vendor: Annotated[
+        str | None,
+        typer.Option("--vendor", "-v", help="Filter by vendor"),
+    ] = None,
+    limit: Annotated[
+        int,
+        typer.Option("--limit", "-l", help="Maximum activities to show"),
+    ] = 50,
+) -> None:
+    """Show GitHub activity log.
+
+    Lists GitHub operations performed during AI assistant sessions,
+    including PR creation, issue creation, comments, and commits.
+
+    Examples:
+        ai-asst-mgr github activity
+        ai-asst-mgr github activity --session abc123
+        ai-asst-mgr github activity --vendor claude --limit 20
+    """
+    if not DEFAULT_DB_PATH.exists():
+        console.print("[red]Database not found![/red]\nRun [bold]ai-asst-mgr db init[/bold] first.")
+        raise typer.Exit(1)
+
+    db = DatabaseManager(DEFAULT_DB_PATH)
+
+    # Build query
+    query = "SELECT * FROM github_activity WHERE 1=1"
+    params: list[Any] = []
+
+    if session:
+        query += " AND session_id = ?"
+        params.append(session)
+
+    if vendor:
+        query += " AND vendor_id = ?"
+        params.append(vendor)
+
+    query += " ORDER BY timestamp DESC LIMIT ?"
+    params.append(limit)
+
+    # Execute query
+    try:
+        with db._connection() as conn:
+            cursor = conn.execute(query, params)
+            rows = cursor.fetchall()
+    except Exception as e:
+        console.print(f"[red]Error querying github_activity: {e}[/red]")
+        console.print("[yellow]The github_activity table may not exist yet.[/yellow]")
+        raise typer.Exit(1) from None
+
+    if not rows:
+        console.print("[yellow]No GitHub activity found matching filters.[/yellow]")
+        if not session and not vendor:
+            console.print(
+                "[dim]This table tracks GitHub operations during AI assistant sessions.[/dim]"
+            )
+        raise typer.Exit(0)
+
+    # Create activity table
+    table = Table(title=f"GitHub Activity (showing {len(rows)})", show_header=True)
+    table.add_column("Time", style="dim", width=16)
+    table.add_column("Vendor", width=10)
+    table.add_column("Operation", width=15)
+    table.add_column("Repository", width=25)
+    table.add_column("Resource", width=12)
+    table.add_column("Session", style="dim", width=12)
+
+    for row in rows:
+        # Format vendor badge
+        vendor_id = row["vendor_id"]
+        if vendor_id == "claude":
+            vendor_badge = "[magenta]Claude[/magenta]"
+        elif vendor_id == "gemini":
+            vendor_badge = "[blue]Gemini[/blue]"
+        elif vendor_id == "openai":
+            vendor_badge = "[green]OpenAI[/green]"
+        else:
+            vendor_badge = str(vendor_id)
+
+        # Format operation type with color
+        op_type = row["operation_type"]
+        if op_type in ("pr_created", "issue_created"):
+            op_display = f"[green]{op_type}[/green]"
+        elif op_type in ("comment_added", "commit_pushed"):
+            op_display = f"[cyan]{op_type}[/cyan]"
+        else:
+            op_display = op_type
+
+        # Format repository
+        repo_owner = row["repo_owner"]
+        repo_name = row["repo_name"]
+        repo_full = f"{repo_owner}/{repo_name}"
+        if len(repo_full) > 23:
+            repo_full = repo_full[:20] + "..."
+
+        # Format resource
+        resource_id = row["resource_id"]
+        resource_display = f"#{resource_id}" if resource_id else "-"
+
+        # Format session ID
+        session_id = row["session_id"]
+        session_display = session_id[:10] if session_id else "-"
+
+        # Format timestamp
+        timestamp = row["timestamp"]
+        time_display = timestamp[:16] if timestamp else "-"
+
+        table.add_row(
+            time_display,
+            vendor_badge,
+            op_display,
+            repo_full,
+            resource_display,
+            session_display,
         )
 
     console.print(table)

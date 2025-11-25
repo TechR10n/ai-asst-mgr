@@ -106,7 +106,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.pylint]
-max-args = 6  # Orchestration functions and CLI commands need 6 params
+max-args = 10  # GitHub activity logging and database operations need many params
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = [
@@ -128,6 +128,15 @@ max-args = 6  # Orchestration functions and CLI commands need 6 params
     "TRY003",  # Long exception messages (acceptable in test assertions)
     "EM101",   # String literals in exceptions (acceptable in tests)
     "F841",    # Local variable unused (mock placeholders for patching)
+    "ERA001",  # Commented-out code (mock implementations for future functions)
+]
+"src/ai_asst_mgr/cli.py" = [
+    "PLR0912", # Too many branches - CLI commands often have complex branching
+    "PLR0915", # Too many statements - CLI commands often have complex logic
+    "PLR2004", # Magic values - display limits are clear in context
+]
+"src/ai_asst_mgr/database/manager.py" = [
+    "PLR2004", # Magic values for splitting repo paths (owner/repo)
 ]
 "src/ai_asst_mgr/operations/sync.py" = [
     "TC003",   # Path used at runtime in dataclass fields and function bodies
