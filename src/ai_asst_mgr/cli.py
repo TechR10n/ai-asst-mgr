@@ -19,6 +19,7 @@ from rich.table import Table
 from rich.text import Text
 
 from ai_asst_mgr.adapters.base import VendorStatus
+from ai_asst_mgr.capabilities import AgentType, UniversalAgentManager
 from ai_asst_mgr.coaches import ClaudeCoach, CodexCoach, GeminiCoach, Priority
 from ai_asst_mgr.operations import (
     BackupManager,
@@ -2289,6 +2290,398 @@ def _sync_execute(
         f"\n[bold]Summary:[/bold] {successful}/{len(results)} succeeded, "
         f"+{total_added} ~{total_modified} -{total_deleted} files"
     )
+
+
+# ============================================================================
+# Agents Command
+# ============================================================================
+
+# Display constants for agent listing
+DESCRIPTION_TRUNCATE_LENGTH = 40
+CONTENT_PREVIEW_LINES = 20
+
+agents_app = typer.Typer(help="Manage agents across AI assistant vendors")
+app.add_typer(agents_app, name="agents")
+
+
+def _get_agent_manager() -> UniversalAgentManager:
+    """Get UniversalAgentManager instance.
+
+    Returns:
+        UniversalAgentManager instance with all vendors.
+    """
+    registry = VendorRegistry()
+    return UniversalAgentManager(registry.get_all_vendors())
+
+
+def _format_agent_type(agent_type: AgentType) -> str:
+    """Format agent type for display.
+
+    Args:
+        agent_type: The agent type enum value.
+
+    Returns:
+        Formatted string with color.
+    """
+    type_styles = {
+        AgentType.AGENT: "[cyan]agent[/cyan]",
+        AgentType.SKILL: "[green]skill[/green]",
+        AgentType.MCP_SERVER: "[yellow]mcp_server[/yellow]",
+        AgentType.FUNCTION: "[blue]function[/blue]",
+    }
+    return type_styles.get(agent_type, str(agent_type.value))
+
+
+@agents_app.command("list")
+def agents_list(
+    vendor: Annotated[
+        str | None,
+        typer.Option("--vendor", "-v", help="Filter by specific vendor"),
+    ] = None,
+    agent_type: Annotated[
+        str | None,
+        typer.Option("--type", "-t", help="Filter by type: agent, skill, mcp_server"),
+    ] = None,
+    search: Annotated[
+        str | None,
+        typer.Option("--search", "-s", help="Search query for name/description"),
+    ] = None,
+) -> None:
+    """List agents across all AI assistant vendors.
+
+    Displays a table of all agents, skills, MCP servers, and other capabilities
+    found across Claude, Gemini, and OpenAI vendors.
+
+    Examples:
+        ai-asst-mgr agents list                    # List all agents
+        ai-asst-mgr agents list --vendor claude    # List Claude agents only
+        ai-asst-mgr agents list --type skill       # List skills only
+        ai-asst-mgr agents list --search "code"    # Search for agents
+
+    Args:
+        vendor: Optional vendor ID to filter by.
+        agent_type: Optional agent type to filter by.
+        search: Optional search query.
+    """
+    manager = _get_agent_manager()
+
+    # Parse agent type filter
+    type_filter = None
+    if agent_type:
+        try:
+            type_filter = AgentType(agent_type)
+        except ValueError:
+            valid_types = ", ".join(t.value for t in AgentType)
+            console.print(f"[red]Error: Invalid agent type '{agent_type}'[/red]")
+            console.print(f"[yellow]Valid types: {valid_types}[/yellow]")
+            raise typer.Exit(code=1) from None
+
+    # List agents
+    result = manager.list_all_agents(
+        vendor_filter=vendor,
+        type_filter=type_filter,
+        search_query=search,
+    )
+
+    if result.total_count == 0:
+        console.print("[yellow]No agents found[/yellow]")
+        if vendor or agent_type or search:
+            console.print("[dim]Try removing filters to see all agents[/dim]")
+        return
+
+    # Create table
+    table = Table(
+        title="Agents Across Vendors",
+        show_header=True,
+        header_style="bold cyan",
+    )
+    table.add_column("Name", style="bold", width=25)
+    table.add_column("Vendor", width=10)
+    table.add_column("Type", width=12)
+    table.add_column("Description", width=40)
+    table.add_column("Size", width=10)
+
+    for agent in result.agents:
+        table.add_row(
+            agent.name,
+            agent.vendor_id.capitalize(),
+            _format_agent_type(agent.agent_type),
+            (
+                agent.description[:DESCRIPTION_TRUNCATE_LENGTH] + "..."
+                if len(agent.description) > DESCRIPTION_TRUNCATE_LENGTH
+                else agent.description
+            ),
+            _format_size_bytes(agent.size_bytes),
+        )
+
+    console.print(table)
+
+    # Summary
+    console.print(f"\n[bold]Total:[/bold] {result.total_count} agent(s)")
+    if result.by_vendor:
+        vendor_summary = ", ".join(f"{v.capitalize()}: {c}" for v, c in result.by_vendor.items())
+        console.print(f"[bold]By Vendor:[/bold] {vendor_summary}")
+    if result.by_type:
+        type_summary = ", ".join(f"{t}: {c}" for t, c in result.by_type.items())
+        console.print(f"[bold]By Type:[/bold] {type_summary}")
+
+
+@agents_app.command("show")
+def agents_show(
+    name: Annotated[str, typer.Argument(help="Name of the agent to show")],
+    vendor: Annotated[
+        str,
+        typer.Option("--vendor", "-v", help="Vendor ID (claude, gemini, openai)"),
+    ],
+) -> None:
+    """Show details of a specific agent.
+
+    Displays detailed information about an agent including its content,
+    file path, and metadata.
+
+    Examples:
+        ai-asst-mgr agents show code-review --vendor claude
+        ai-asst-mgr agents show my-mcp-server -v gemini
+
+    Args:
+        name: Name of the agent.
+        vendor: Vendor ID.
+    """
+    manager = _get_agent_manager()
+    agent = manager.get_agent(name, vendor)
+
+    if not agent:
+        console.print(f"[red]Error: Agent '{name}' not found in {vendor}[/red]")
+        raise typer.Exit(code=1)
+
+    # Display agent details
+    console.print(Panel.fit(f"[bold blue]{agent.name}[/bold blue]", border_style="blue"))
+
+    details = Table.grid(padding=(0, 2))
+    details.add_row("[bold]Vendor:[/bold]", agent.vendor_id.capitalize())
+    details.add_row("[bold]Type:[/bold]", _format_agent_type(agent.agent_type))
+    details.add_row("[bold]Description:[/bold]", agent.description or "[dim]None[/dim]")
+    file_path_str = str(agent.file_path) if agent.file_path else "[dim]None[/dim]"
+    details.add_row("[bold]File Path:[/bold]", file_path_str)
+    details.add_row("[bold]Size:[/bold]", _format_size_bytes(agent.size_bytes))
+    details.add_row("[bold]Created:[/bold]", agent.created_at.strftime("%Y-%m-%d %H:%M:%S"))
+    details.add_row("[bold]Modified:[/bold]", agent.modified_at.strftime("%Y-%m-%d %H:%M:%S"))
+
+    console.print(details)
+
+    if agent.content:
+        console.print("\n[bold]Content:[/bold]")
+        content_lines = agent.content.split("\n")
+        lines = content_lines[:CONTENT_PREVIEW_LINES]
+        content_preview = "\n".join(lines)
+        if len(content_lines) > CONTENT_PREVIEW_LINES:
+            content_preview += "\n[dim]... (truncated)[/dim]"
+        console.print(Panel(content_preview, border_style="dim"))
+
+
+@agents_app.command("create")
+def agents_create(
+    name: Annotated[str, typer.Argument(help="Name of the agent to create")],
+    vendor: Annotated[
+        str,
+        typer.Option("--vendor", "-v", help="Vendor ID (claude, gemini, openai)"),
+    ],
+    agent_type: Annotated[
+        str,
+        typer.Option("--type", "-t", help="Agent type: agent, skill, mcp_server"),
+    ] = "agent",
+    content: Annotated[
+        str | None,
+        typer.Option("--content", "-c", help="Content for the agent (or use --file)"),
+    ] = None,
+    file: Annotated[
+        Path | None,
+        typer.Option("--file", "-f", help="Read content from file"),
+    ] = None,
+    description: Annotated[
+        str | None,
+        typer.Option("--description", "-d", help="Description for the agent"),
+    ] = None,
+) -> None:
+    """Create a new agent for a vendor.
+
+    Creates a new agent, skill, or MCP server configuration for the
+    specified vendor.
+
+    Examples:
+        ai-asst-mgr agents create my-agent -v claude -t agent -c "# My Agent"
+        ai-asst-mgr agents create my-skill -v claude -t skill -f skill.md
+        ai-asst-mgr agents create my-mcp -v gemini -t mcp_server -c '{"url":"..."}'
+
+    Args:
+        name: Name of the agent.
+        vendor: Vendor ID.
+        agent_type: Type of agent to create.
+        content: Content for the agent.
+        file: Path to file with content.
+        description: Optional description.
+    """
+    # Parse agent type
+    try:
+        parsed_type = AgentType(agent_type)
+    except ValueError:
+        valid_types = ", ".join(t.value for t in AgentType)
+        console.print(f"[red]Error: Invalid agent type '{agent_type}'[/red]")
+        console.print(f"[yellow]Valid types: {valid_types}[/yellow]")
+        raise typer.Exit(code=1) from None
+
+    # Get content
+    if file:
+        if not file.exists():
+            console.print(f"[red]Error: File not found: {file}[/red]")
+            raise typer.Exit(code=1)
+        agent_content = file.read_text(encoding="utf-8")
+    elif content:
+        agent_content = content
+    elif parsed_type in (AgentType.AGENT, AgentType.SKILL):
+        # Generate default markdown content
+        agent_content = f"# {name}\n\n{description or 'Add description here.'}\n"
+    else:
+        # Generate default JSON content for MCP servers
+        agent_content = f'{{"name": "{name}", "description": "{description or ""}"}}'
+
+    manager = _get_agent_manager()
+
+    def progress_callback(msg: str) -> None:
+        console.print(f"  {msg}")
+
+    result = manager.create_agent(
+        name=name,
+        vendor_id=vendor,
+        agent_type=parsed_type,
+        content=agent_content,
+        progress_callback=progress_callback,
+    )
+
+    if result.success and result.agent:
+        console.print(f"\n[green]✓ Created agent '{name}' for {vendor}[/green]")
+        if result.agent.file_path:
+            console.print(f"  Path: {result.agent.file_path}")
+    else:
+        console.print(f"\n[red]✗ Failed to create agent: {result.error}[/red]")
+        raise typer.Exit(code=1)
+
+
+@agents_app.command("delete")
+def agents_delete(
+    name: Annotated[str, typer.Argument(help="Name of the agent to delete")],
+    vendor: Annotated[
+        str,
+        typer.Option("--vendor", "-v", help="Vendor ID (claude, gemini, openai)"),
+    ],
+    force: Annotated[
+        bool,
+        typer.Option("--force", "-f", help="Skip confirmation prompt"),
+    ] = False,
+) -> None:
+    """Delete an agent from a vendor.
+
+    Removes an agent, skill, or MCP server configuration from the
+    specified vendor.
+
+    Examples:
+        ai-asst-mgr agents delete old-agent -v claude
+        ai-asst-mgr agents delete old-skill -v claude --force
+
+    Args:
+        name: Name of the agent to delete.
+        vendor: Vendor ID.
+        force: Skip confirmation prompt.
+    """
+    manager = _get_agent_manager()
+
+    # Check if agent exists
+    agent = manager.get_agent(name, vendor)
+    if not agent:
+        console.print(f"[red]Error: Agent '{name}' not found in {vendor}[/red]")
+        raise typer.Exit(code=1)
+
+    # Confirm deletion
+    if not force:
+        console.print("\n[yellow]About to delete:[/yellow]")
+        console.print(f"  Name: {agent.name}")
+        console.print(f"  Vendor: {agent.vendor_id}")
+        console.print(f"  Type: {agent.agent_type.value}")
+        if agent.file_path:
+            console.print(f"  File: {agent.file_path}")
+
+        confirm = typer.confirm("\nAre you sure you want to delete this agent?")
+        if not confirm:
+            console.print("[dim]Aborted[/dim]")
+            return
+
+    def progress_callback(msg: str) -> None:
+        console.print(f"  {msg}")
+
+    success, message = manager.delete_agent(name, vendor, progress_callback=progress_callback)
+
+    if success:
+        console.print(f"\n[green]✓ {message}[/green]")
+    else:
+        console.print(f"\n[red]✗ {message}[/red]")
+        raise typer.Exit(code=1)
+
+
+@agents_app.command("sync")
+def agents_sync(
+    name: Annotated[str, typer.Argument(help="Name of the agent to sync")],
+    source: Annotated[
+        str,
+        typer.Option("--source", "-s", help="Source vendor ID"),
+    ],
+    target: Annotated[
+        list[str] | None,
+        typer.Option("--target", "-t", help="Target vendor ID(s) (repeatable)"),
+    ] = None,
+) -> None:
+    """Sync an agent from one vendor to others.
+
+    Copies an agent from a source vendor to one or more target vendors,
+    converting the format as needed for compatibility.
+
+    Examples:
+        ai-asst-mgr agents sync my-agent --source claude --target gemini
+        ai-asst-mgr agents sync my-agent -s claude -t gemini -t openai
+        ai-asst-mgr agents sync my-agent -s claude  # Sync to all other vendors
+
+    Args:
+        name: Name of the agent to sync.
+        source: Source vendor ID.
+        target: Target vendor ID(s). If not specified, syncs to all others.
+    """
+    manager = _get_agent_manager()
+
+    def progress_callback(msg: str) -> None:
+        console.print(f"  {msg}")
+
+    console.print(f"\n[bold]Syncing agent '{name}' from {source}...[/bold]")
+
+    result = manager.sync_agent(
+        agent_name=name,
+        source_vendor=source,
+        target_vendors=target,
+        progress_callback=progress_callback,
+    )
+
+    if result.success:
+        console.print(f"\n[green]✓ Synced to {result.synced_count} vendor(s)[/green]")
+        if result.target_vendors:
+            console.print(f"  Vendors: {', '.join(result.target_vendors)}")
+    else:
+        console.print("\n[red]✗ Sync failed[/red]")
+
+    if result.errors:
+        console.print("\n[yellow]Errors:[/yellow]")
+        for error in result.errors:
+            console.print(f"  • {error}")
+
+    if not result.success:
+        raise typer.Exit(code=1)
 
 
 def main() -> None:

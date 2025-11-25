@@ -14,6 +14,8 @@ from typer.testing import CliRunner
 
 from ai_asst_mgr import cli
 from ai_asst_mgr.adapters.base import VendorAdapter, VendorStatus
+from ai_asst_mgr.capabilities import Agent, AgentType
+from ai_asst_mgr.capabilities.manager import AgentListResult
 from ai_asst_mgr.cli import (
     _attempt_fixes,
     _check_read_permission,
@@ -23,8 +25,10 @@ from ai_asst_mgr.cli import (
     _display_coach_recommendations,
     _display_coach_stats,
     _flatten_dict,
+    _format_agent_type,
     _format_config_value,
     _format_size_bytes,
+    _get_agent_manager,
     _get_all_coaches,
     _get_coach_for_vendor,
     _get_notes_for_status,
@@ -3264,3 +3268,371 @@ class TestSyncCommandAdditionalCases:
             )
             assert result.exit_code == 0
             assert "Success" in result.stdout
+
+
+# ============================================================================
+# Agents Command Tests
+# ============================================================================
+
+
+class TestAgentsHelperFunctions:
+    """Tests for agents command helper functions."""
+
+    def test_format_agent_type_agent(self) -> None:
+        """Test formatting agent type."""
+        result = _format_agent_type(AgentType.AGENT)
+        assert "agent" in result
+        assert "cyan" in result
+
+    def test_format_agent_type_skill(self) -> None:
+        """Test formatting skill type."""
+        result = _format_agent_type(AgentType.SKILL)
+        assert "skill" in result
+        assert "green" in result
+
+    def test_format_agent_type_mcp_server(self) -> None:
+        """Test formatting MCP server type."""
+        result = _format_agent_type(AgentType.MCP_SERVER)
+        assert "mcp_server" in result
+        assert "yellow" in result
+
+    def test_format_agent_type_function(self) -> None:
+        """Test formatting function type."""
+        result = _format_agent_type(AgentType.FUNCTION)
+        assert "function" in result
+        assert "blue" in result
+
+    def test_get_agent_manager(self) -> None:
+        """Test getting agent manager instance."""
+        with patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class:
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {"claude": MagicMock()}
+            mock_registry_class.return_value = mock_registry
+
+            manager = _get_agent_manager()
+            assert manager is not None
+
+
+class TestAgentsListCommand:
+    """Tests for agents list command."""
+
+    def test_agents_list_no_agents(self) -> None:
+        """Test agents list with no agents found."""
+        with patch("ai_asst_mgr.cli._get_agent_manager") as mock_get_manager:
+            mock_manager = MagicMock()
+            mock_manager.list_all_agents.return_value = AgentListResult(
+                agents=[], total_count=0, by_vendor={}, by_type={}
+            )
+            mock_get_manager.return_value = mock_manager
+
+            result = runner.invoke(app, ["agents", "list"])
+            assert result.exit_code == 0
+            assert "No agents found" in result.stdout
+
+    def test_agents_list_with_agents(self) -> None:
+        """Test agents list with agents found."""
+        with patch("ai_asst_mgr.cli._get_agent_manager") as mock_get_manager:
+            mock_agent = Agent(
+                name="test-agent",
+                vendor_id="claude",
+                agent_type=AgentType.AGENT,
+                description="A test agent",
+                size_bytes=100,
+            )
+            mock_manager = MagicMock()
+            mock_manager.list_all_agents.return_value = AgentListResult(
+                agents=[mock_agent],
+                total_count=1,
+                by_vendor={"claude": 1},
+                by_type={"agent": 1},
+            )
+            mock_get_manager.return_value = mock_manager
+
+            result = runner.invoke(app, ["agents", "list"])
+            assert result.exit_code == 0
+            assert "test-agent" in result.stdout
+            assert "Total:" in result.stdout
+
+    def test_agents_list_with_vendor_filter(self) -> None:
+        """Test agents list with vendor filter."""
+        with patch("ai_asst_mgr.cli._get_agent_manager") as mock_get_manager:
+            mock_manager = MagicMock()
+            mock_manager.list_all_agents.return_value = AgentListResult(
+                agents=[], total_count=0, by_vendor={}, by_type={}
+            )
+            mock_get_manager.return_value = mock_manager
+
+            result = runner.invoke(app, ["agents", "list", "--vendor", "claude"])
+            assert result.exit_code == 0
+            mock_manager.list_all_agents.assert_called_with(
+                vendor_filter="claude", type_filter=None, search_query=None
+            )
+
+    def test_agents_list_with_type_filter(self) -> None:
+        """Test agents list with type filter."""
+        with patch("ai_asst_mgr.cli._get_agent_manager") as mock_get_manager:
+            mock_manager = MagicMock()
+            mock_manager.list_all_agents.return_value = AgentListResult(
+                agents=[], total_count=0, by_vendor={}, by_type={}
+            )
+            mock_get_manager.return_value = mock_manager
+
+            result = runner.invoke(app, ["agents", "list", "--type", "skill"])
+            assert result.exit_code == 0
+            mock_manager.list_all_agents.assert_called_with(
+                vendor_filter=None, type_filter=AgentType.SKILL, search_query=None
+            )
+
+    def test_agents_list_with_invalid_type(self) -> None:
+        """Test agents list with invalid type filter."""
+        with patch("ai_asst_mgr.cli._get_agent_manager") as mock_get_manager:
+            mock_manager = MagicMock()
+            mock_get_manager.return_value = mock_manager
+
+            result = runner.invoke(app, ["agents", "list", "--type", "invalid"])
+            assert result.exit_code == 1
+            assert "Invalid agent type" in result.stdout
+
+    def test_agents_list_with_search(self) -> None:
+        """Test agents list with search query."""
+        with patch("ai_asst_mgr.cli._get_agent_manager") as mock_get_manager:
+            mock_manager = MagicMock()
+            mock_manager.list_all_agents.return_value = AgentListResult(
+                agents=[], total_count=0, by_vendor={}, by_type={}
+            )
+            mock_get_manager.return_value = mock_manager
+
+            result = runner.invoke(app, ["agents", "list", "--search", "code"])
+            assert result.exit_code == 0
+            mock_manager.list_all_agents.assert_called_with(
+                vendor_filter=None, type_filter=None, search_query="code"
+            )
+
+
+class TestAgentsShowCommand:
+    """Tests for agents show command."""
+
+    def test_agents_show_found(self) -> None:
+        """Test agents show with agent found."""
+        with patch("ai_asst_mgr.cli._get_agent_manager") as mock_get_manager:
+            from datetime import UTC, datetime
+            from pathlib import Path
+
+            mock_agent = Agent(
+                name="test-agent",
+                vendor_id="claude",
+                agent_type=AgentType.AGENT,
+                description="A test agent",
+                file_path=Path("/test/path"),
+                content="# Test Agent\n\nContent here",
+                size_bytes=100,
+                created_at=datetime.now(UTC),
+                modified_at=datetime.now(UTC),
+            )
+            mock_manager = MagicMock()
+            mock_manager.get_agent.return_value = mock_agent
+            mock_get_manager.return_value = mock_manager
+
+            result = runner.invoke(app, ["agents", "show", "test-agent", "--vendor", "claude"])
+            assert result.exit_code == 0
+            assert "test-agent" in result.stdout
+            assert "Claude" in result.stdout
+
+    def test_agents_show_not_found(self) -> None:
+        """Test agents show with agent not found."""
+        with patch("ai_asst_mgr.cli._get_agent_manager") as mock_get_manager:
+            mock_manager = MagicMock()
+            mock_manager.get_agent.return_value = None
+            mock_get_manager.return_value = mock_manager
+
+            result = runner.invoke(app, ["agents", "show", "nonexistent", "--vendor", "claude"])
+            assert result.exit_code == 1
+            assert "not found" in result.stdout
+
+
+class TestAgentsCreateCommand:
+    """Tests for agents create command."""
+
+    def test_agents_create_success(self) -> None:
+        """Test successful agent creation."""
+        with patch("ai_asst_mgr.cli._get_agent_manager") as mock_get_manager:
+            from pathlib import Path
+
+            from ai_asst_mgr.capabilities.manager import AgentCreateResult
+
+            mock_agent = Agent(
+                name="new-agent",
+                vendor_id="claude",
+                agent_type=AgentType.AGENT,
+                file_path=Path("/test/agents/new-agent.md"),
+            )
+            mock_result = AgentCreateResult(success=True, agent=mock_agent)
+            mock_manager = MagicMock()
+            mock_manager.create_agent.return_value = mock_result
+            mock_get_manager.return_value = mock_manager
+
+            result = runner.invoke(
+                app,
+                ["agents", "create", "new-agent", "--vendor", "claude", "--content", "# Test"],
+            )
+            assert result.exit_code == 0
+            assert "Created agent" in result.stdout
+
+    def test_agents_create_failure(self) -> None:
+        """Test failed agent creation."""
+        with patch("ai_asst_mgr.cli._get_agent_manager") as mock_get_manager:
+            from ai_asst_mgr.capabilities.manager import AgentCreateResult
+
+            mock_result = AgentCreateResult(success=False, error="Test error")
+            mock_manager = MagicMock()
+            mock_manager.create_agent.return_value = mock_result
+            mock_get_manager.return_value = mock_manager
+
+            result = runner.invoke(
+                app,
+                ["agents", "create", "new-agent", "--vendor", "claude", "--content", "# Test"],
+            )
+            assert result.exit_code == 1
+            assert "Failed to create agent" in result.stdout
+
+    def test_agents_create_with_invalid_type(self) -> None:
+        """Test agent creation with invalid type."""
+        with patch("ai_asst_mgr.cli._get_agent_manager") as mock_get_manager:
+            mock_manager = MagicMock()
+            mock_get_manager.return_value = mock_manager
+
+            result = runner.invoke(
+                app,
+                ["agents", "create", "new-agent", "--vendor", "claude", "--type", "invalid"],
+            )
+            assert result.exit_code == 1
+            assert "Invalid agent type" in result.stdout
+
+
+class TestAgentsDeleteCommand:
+    """Tests for agents delete command."""
+
+    def test_agents_delete_success(self) -> None:
+        """Test successful agent deletion."""
+        with patch("ai_asst_mgr.cli._get_agent_manager") as mock_get_manager:
+            mock_agent = Agent(
+                name="test-agent",
+                vendor_id="claude",
+                agent_type=AgentType.AGENT,
+            )
+            mock_manager = MagicMock()
+            mock_manager.get_agent.return_value = mock_agent
+            mock_manager.delete_agent.return_value = (True, "Deleted test-agent")
+            mock_get_manager.return_value = mock_manager
+
+            result = runner.invoke(
+                app,
+                ["agents", "delete", "test-agent", "--vendor", "claude", "--force"],
+            )
+            assert result.exit_code == 0
+            assert "Deleted" in result.stdout
+
+    def test_agents_delete_not_found(self) -> None:
+        """Test deleting non-existent agent."""
+        with patch("ai_asst_mgr.cli._get_agent_manager") as mock_get_manager:
+            mock_manager = MagicMock()
+            mock_manager.get_agent.return_value = None
+            mock_get_manager.return_value = mock_manager
+
+            result = runner.invoke(
+                app,
+                ["agents", "delete", "nonexistent", "--vendor", "claude", "--force"],
+            )
+            assert result.exit_code == 1
+            assert "not found" in result.stdout
+
+    def test_agents_delete_failure(self) -> None:
+        """Test failed agent deletion."""
+        with patch("ai_asst_mgr.cli._get_agent_manager") as mock_get_manager:
+            mock_agent = Agent(
+                name="test-agent",
+                vendor_id="claude",
+                agent_type=AgentType.AGENT,
+            )
+            mock_manager = MagicMock()
+            mock_manager.get_agent.return_value = mock_agent
+            mock_manager.delete_agent.return_value = (False, "Failed to delete")
+            mock_get_manager.return_value = mock_manager
+
+            result = runner.invoke(
+                app,
+                ["agents", "delete", "test-agent", "--vendor", "claude", "--force"],
+            )
+            assert result.exit_code == 1
+            assert "Failed to delete" in result.stdout
+
+
+class TestAgentsSyncCommand:
+    """Tests for agents sync command."""
+
+    def test_agents_sync_success(self) -> None:
+        """Test successful agent sync."""
+        with patch("ai_asst_mgr.cli._get_agent_manager") as mock_get_manager:
+            from ai_asst_mgr.capabilities.manager import AgentSyncResult
+
+            mock_result = AgentSyncResult(
+                success=True,
+                source_vendor="claude",
+                target_vendors=["gemini"],
+                synced_count=1,
+                errors=[],
+            )
+            mock_manager = MagicMock()
+            mock_manager.sync_agent.return_value = mock_result
+            mock_get_manager.return_value = mock_manager
+
+            result = runner.invoke(
+                app,
+                ["agents", "sync", "test-agent", "--source", "claude", "--target", "gemini"],
+            )
+            assert result.exit_code == 0
+            assert "Synced to 1 vendor(s)" in result.stdout
+
+    def test_agents_sync_failure(self) -> None:
+        """Test failed agent sync."""
+        with patch("ai_asst_mgr.cli._get_agent_manager") as mock_get_manager:
+            from ai_asst_mgr.capabilities.manager import AgentSyncResult
+
+            mock_result = AgentSyncResult(
+                success=False,
+                errors=["Agent not found"],
+            )
+            mock_manager = MagicMock()
+            mock_manager.sync_agent.return_value = mock_result
+            mock_get_manager.return_value = mock_manager
+
+            result = runner.invoke(
+                app,
+                ["agents", "sync", "test-agent", "--source", "claude"],
+            )
+            assert result.exit_code == 1
+            assert "Sync failed" in result.stdout
+
+    def test_agents_sync_with_errors(self) -> None:
+        """Test agent sync with partial success and errors."""
+        with patch("ai_asst_mgr.cli._get_agent_manager") as mock_get_manager:
+            from ai_asst_mgr.capabilities.manager import AgentSyncResult
+
+            mock_result = AgentSyncResult(
+                success=True,
+                source_vendor="claude",
+                target_vendors=["gemini"],
+                synced_count=1,
+                errors=["openai: Incompatible type"],
+            )
+            mock_manager = MagicMock()
+            mock_manager.sync_agent.return_value = mock_result
+            mock_get_manager.return_value = mock_manager
+
+            result = runner.invoke(
+                app,
+                ["agents", "sync", "test-agent", "--source", "claude"],
+            )
+            assert result.exit_code == 0
+            assert "Synced to 1 vendor(s)" in result.stdout
+            assert "Errors:" in result.stdout
