@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Create all GitHub issues from GITHUB_ISSUES.md
+"""Create all GitHub issues from GITHUB_ISSUES.md
 
 This script parses GITHUB_ISSUES.md and creates issues using GitHub CLI (gh).
 
@@ -17,20 +16,12 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional
 
 
 class Issue:
     """Represents a GitHub issue to be created."""
 
-    def __init__(
-        self,
-        number: int,
-        title: str,
-        labels: list[str],
-        milestone: str,
-        body: str
-    ):
+    def __init__(self, number: int, title: str, labels: list[str], milestone: str, body: str):
         self.number = number
         self.title = title
         self.labels = labels
@@ -43,11 +34,10 @@ class Issue:
 
 def parse_issues_file(file_path: Path) -> list[Issue]:
     """Parse GITHUB_ISSUES.md and extract all issues."""
-
     content = file_path.read_text()
 
     # Split into sections by ## Issue #N pattern
-    issue_pattern = r'## Issue #(\d+): (.+?)\n'
+    issue_pattern = r"## Issue #(\d+): (.+?)\n"
     issue_sections = re.split(issue_pattern, content)
 
     # First element is the preamble (labels, milestones), skip it
@@ -63,44 +53,44 @@ def parse_issues_file(file_path: Path) -> list[Issue]:
         body_text = issue_sections[i + 2]
 
         # Extract labels
-        labels_match = re.search(r'\*\*Labels:\*\*\s*`(.+?)`', body_text)
+        labels_match = re.search(r"\*\*Labels:\*\*\s*`(.+?)`", body_text)
         labels = []
         if labels_match:
-            labels = [l.strip() for l in labels_match.group(1).split(',')]
+            labels = [label.strip() for label in labels_match.group(1).split(",")]
 
         # Extract milestone
-        milestone_match = re.search(r'\*\*Milestone:\*\*\s*(.+?)(?:\n|$)', body_text)
+        milestone_match = re.search(r"\*\*Milestone:\*\*\s*(.+?)(?:\n|$)", body_text)
         milestone = milestone_match.group(1).strip() if milestone_match else ""
 
         # Build issue body (everything from ### Description onwards)
-        body_start = body_text.find('### Description')
+        body_start = body_text.find("### Description")
         if body_start != -1:
             body = body_text[body_start:].strip()
             # Remove trailing separator if present
-            body = re.sub(r'\n---\s*$', '', body)
+            body = re.sub(r"\n---\s*$", "", body)
         else:
             body = body_text.strip()
 
-        issues.append(Issue(
-            number=number,
-            title=title,
-            labels=labels,
-            milestone=milestone,
-            body=body
-        ))
+        issues.append(
+            Issue(number=number, title=title, labels=labels, milestone=milestone, body=body)
+        )
 
     return issues
 
 
 def create_github_issue(issue: Issue, dry_run: bool = False) -> bool:
     """Create a GitHub issue using gh CLI."""
-
     # Build gh command
     cmd = [
-        "gh", "issue", "create",
-        "--title", issue.title,
-        "--body", issue.body,
-        "--repo", "TechR10n/ai-asst-mgr"
+        "gh",
+        "issue",
+        "create",
+        "--title",
+        issue.title,
+        "--body",
+        issue.body,
+        "--repo",
+        "TechR10n/ai-asst-mgr",
     ]
 
     # Add labels
@@ -120,34 +110,25 @@ def create_github_issue(issue: Issue, dry_run: bool = False) -> bool:
         return True
 
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=True
-        )
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"✗ Failed to create issue #{issue.number}: {issue.title}")
+        print(f"  Error: {e.stderr}")
+        return False
+    else:
         print(f"✓ Created issue #{issue.number}: {issue.title}")
         # Extract issue URL from output
         issue_url = result.stdout.strip()
         if issue_url:
             print(f"  {issue_url}")
         return True
-    except subprocess.CalledProcessError as e:
-        print(f"✗ Failed to create issue #{issue.number}: {issue.title}")
-        print(f"  Error: {e.stderr}")
-        return False
 
 
 def check_gh_cli() -> bool:
     """Check if GitHub CLI is installed and authenticated."""
-
     # Check if gh is installed
     try:
-        subprocess.run(
-            ["gh", "--version"],
-            capture_output=True,
-            check=True
-        )
+        subprocess.run(["gh", "--version"], capture_output=True, check=True)
     except (subprocess.CalledProcessError, FileNotFoundError):
         print("Error: GitHub CLI (gh) is not installed.")
         print("Install with: brew install gh")
@@ -155,11 +136,7 @@ def check_gh_cli() -> bool:
 
     # Check if authenticated
     try:
-        subprocess.run(
-            ["gh", "auth", "status"],
-            capture_output=True,
-            check=True
-        )
+        subprocess.run(["gh", "auth", "status"], capture_output=True, check=True)
     except subprocess.CalledProcessError:
         print("Error: GitHub CLI is not authenticated.")
         print("Run: gh auth login")
@@ -170,7 +147,6 @@ def check_gh_cli() -> bool:
 
 def main() -> int:
     """Main entry point."""
-
     # Parse arguments
     dry_run = "--dry-run" in sys.argv
 

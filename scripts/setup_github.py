@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Complete GitHub setup automation
+"""Complete GitHub setup automation
 
 This master script runs all setup scripts in the correct order:
 1. Create labels
@@ -25,7 +24,6 @@ from pathlib import Path
 
 def run_script(script_name: str, dry_run: bool = False) -> bool:
     """Run a setup script."""
-
     script_path = Path(__file__).parent / script_name
 
     cmd = [sys.executable, str(script_path)]
@@ -38,15 +36,15 @@ def run_script(script_name: str, dry_run: bool = False) -> bool:
 
     try:
         result = subprocess.run(cmd, check=True)
-        return result.returncode == 0
     except subprocess.CalledProcessError:
         print(f"\n✗ {script_name} failed")
         return False
+    else:
+        return result.returncode == 0
 
 
 def main() -> int:
     """Main entry point."""
-
     # Parse arguments
     dry_run = "--dry-run" in sys.argv
 

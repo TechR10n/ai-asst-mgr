@@ -28,6 +28,13 @@ from ai_asst_mgr.operations import (
     RestoreManager,
     SyncManager,
 )
+from ai_asst_mgr.platform import (
+    IntervalType,
+    ScheduleInfo,
+    UnsupportedPlatformError,
+    get_platform_info,
+    get_scheduler,
+)
 from ai_asst_mgr.vendors import VendorRegistry
 
 if TYPE_CHECKING:
@@ -2973,6 +2980,267 @@ def agents_sync(
             console.print(f"  • {error}")
 
     if not result.success:
+        raise typer.Exit(code=1)
+
+
+# ============================================================================
+# Schedule Command
+# ============================================================================
+
+# Time validation constants
+MAX_HOUR = 23
+MAX_MINUTE = 59
+MAX_DAY_OF_WEEK = 6
+MIN_DAY_OF_MONTH = 1
+MAX_DAY_OF_MONTH = 31
+
+schedule_app = typer.Typer(help="Manage scheduled backup tasks")
+app.add_typer(schedule_app, name="schedule")
+
+
+def _get_interval_display(interval: IntervalType | None) -> str:
+    """Get display string for interval type.
+
+    Args:
+        interval: IntervalType enum value.
+
+    Returns:
+        Formatted interval string.
+    """
+    if interval is None:
+        return "[dim]Not set[/dim]"
+    displays = {
+        IntervalType.HOURLY: "[cyan]Hourly[/cyan]",
+        IntervalType.DAILY: "[green]Daily[/green]",
+        IntervalType.WEEKLY: "[blue]Weekly[/blue]",
+        IntervalType.MONTHLY: "[magenta]Monthly[/magenta]",
+    }
+    return displays.get(interval, interval.value)
+
+
+def _display_schedule_info(info: ScheduleInfo) -> None:
+    """Display schedule information in a formatted table.
+
+    Args:
+        info: ScheduleInfo instance with schedule details.
+    """
+    table = Table(title="Schedule Details", show_header=False, box=None)
+    table.add_column("Property", style="bold")
+    table.add_column("Value")
+
+    status = "[green]Active[/green]" if info.is_active else "[red]Inactive[/red]"
+    table.add_row("Status", status)
+
+    if info.interval:
+        table.add_row("Interval", _get_interval_display(info.interval))
+
+    if info.next_run:
+        table.add_row("Next Run", info.next_run)
+
+    if info.script_path:
+        table.add_row("Script", str(info.script_path))
+
+    if info.platform_details:
+        for key, value in info.platform_details.items():
+            table.add_row(key.replace("_", " ").title(), value)
+
+    console.print(table)
+
+
+@schedule_app.command("status")
+def schedule_status() -> None:
+    """Show the current backup schedule status.
+
+    Displays whether a backup schedule is active and its configuration
+    details for the current platform.
+
+    Examples:
+        ai-asst-mgr schedule status
+    """
+    try:
+        scheduler = get_scheduler()
+    except UnsupportedPlatformError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(code=1) from None
+
+    platform_info = get_platform_info()
+    console.print(
+        Panel.fit(
+            f"[bold blue]Backup Schedule Status[/bold blue]\n"
+            f"[dim]Platform: {scheduler.platform_name} ({platform_info['machine']})[/dim]",
+            border_style="blue",
+        )
+    )
+
+    info = scheduler.get_schedule_info()
+    _display_schedule_info(info)
+
+
+@schedule_app.command("setup")
+def schedule_setup(
+    script: Annotated[
+        Path,
+        typer.Argument(help="Path to the backup script to schedule"),
+    ],
+    interval: Annotated[
+        str,
+        typer.Option("--interval", "-i", help="Interval: hourly, daily, weekly, monthly"),
+    ] = "daily",
+    hour: Annotated[
+        int,
+        typer.Option("--hour", "-H", help="Hour to run (0-23)"),
+    ] = 2,
+    minute: Annotated[
+        int,
+        typer.Option("--minute", "-m", help="Minute to run (0-59)"),
+    ] = 0,
+    day_of_week: Annotated[
+        int,
+        typer.Option("--day-of-week", "-w", help="Day of week for weekly (0=Sunday)"),
+    ] = 0,
+    day_of_month: Annotated[
+        int,
+        typer.Option("--day-of-month", "-d", help="Day of month for monthly (1-31)"),
+    ] = 1,
+) -> None:
+    """Set up a scheduled backup task.
+
+    Creates a platform-specific scheduled task (LaunchAgent on macOS,
+    cron on Linux) to run backups at the specified interval.
+
+    Examples:
+        ai-asst-mgr schedule setup ./backup.sh                  # Daily at 2 AM
+        ai-asst-mgr schedule setup ./backup.sh -i hourly        # Every hour
+        ai-asst-mgr schedule setup ./backup.sh -i weekly -w 0   # Sundays at 2 AM
+        ai-asst-mgr schedule setup ./backup.sh -i daily -H 3    # Daily at 3 AM
+
+    Args:
+        script: Path to the backup script to schedule.
+        interval: How often to run (hourly, daily, weekly, monthly).
+        hour: Hour to run (0-23), default 2.
+        minute: Minute to run (0-59), default 0.
+        day_of_week: Day of week for weekly (0=Sunday), default 0.
+        day_of_month: Day of month for monthly (1-31), default 1.
+    """
+    # Validate script exists
+    if not script.exists():
+        console.print(f"[red]Error: Script not found: {script}[/red]")
+        raise typer.Exit(code=1)
+
+    # Validate script is executable
+    if not script.stat().st_mode & 0o111:
+        console.print(f"[yellow]Warning: Script may not be executable: {script}[/yellow]")
+
+    # Parse interval
+    try:
+        interval_type = IntervalType(interval.lower())
+    except ValueError:
+        valid = ", ".join(i.value for i in IntervalType)
+        console.print(f"[red]Error: Invalid interval '{interval}'[/red]")
+        console.print(f"[yellow]Valid intervals: {valid}[/yellow]")
+        raise typer.Exit(code=1) from None
+
+    # Validate time parameters
+    if not (0 <= hour <= MAX_HOUR):
+        console.print(f"[red]Error: Hour must be 0-{MAX_HOUR}, got {hour}[/red]")
+        raise typer.Exit(code=1)
+    if not (0 <= minute <= MAX_MINUTE):
+        console.print(f"[red]Error: Minute must be 0-{MAX_MINUTE}, got {minute}[/red]")
+        raise typer.Exit(code=1)
+    if not (0 <= day_of_week <= MAX_DAY_OF_WEEK):
+        console.print(
+            f"[red]Error: Day of week must be 0-{MAX_DAY_OF_WEEK}, got {day_of_week}[/red]"
+        )
+        raise typer.Exit(code=1)
+    if not (MIN_DAY_OF_MONTH <= day_of_month <= MAX_DAY_OF_MONTH):
+        console.print(
+            f"[red]Error: Day of month must be {MIN_DAY_OF_MONTH}-{MAX_DAY_OF_MONTH}, "
+            f"got {day_of_month}[/red]"
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        scheduler = get_scheduler()
+    except UnsupportedPlatformError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(code=1) from None
+
+    console.print(
+        Panel.fit(
+            f"[bold blue]Setting Up Backup Schedule[/bold blue]\n"
+            f"[dim]Platform: {scheduler.platform_name}[/dim]",
+            border_style="blue",
+        )
+    )
+
+    script_path = script.resolve()
+    console.print(f"  Script: {script_path}")
+    console.print(f"  Interval: {interval_type.description}")
+
+    success = scheduler.setup_schedule(
+        script_path=script_path,
+        interval=interval_type,
+        hour=hour,
+        minute=minute,
+        day_of_week=day_of_week,
+        day_of_month=day_of_month,
+    )
+
+    if success:
+        console.print("\n[green]✓ Backup schedule created successfully[/green]")
+        info = scheduler.get_schedule_info()
+        if info.next_run:
+            console.print(f"  Next run: {info.next_run}")
+    else:
+        console.print("\n[red]✗ Failed to create backup schedule[/red]")
+        raise typer.Exit(code=1)
+
+
+@schedule_app.command("remove")
+def schedule_remove(
+    force: Annotated[
+        bool,
+        typer.Option("--force", "-f", help="Skip confirmation prompt"),
+    ] = False,
+) -> None:
+    """Remove the backup schedule.
+
+    Removes the platform-specific scheduled task (LaunchAgent on macOS,
+    cron on Linux).
+
+    Examples:
+        ai-asst-mgr schedule remove          # With confirmation
+        ai-asst-mgr schedule remove --force  # Skip confirmation
+
+    Args:
+        force: Skip confirmation prompt.
+    """
+    try:
+        scheduler = get_scheduler()
+    except UnsupportedPlatformError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(code=1) from None
+
+    if not scheduler.is_scheduled():
+        console.print("[yellow]No backup schedule is currently active[/yellow]")
+        return
+
+    info = scheduler.get_schedule_info()
+
+    if not force:
+        console.print("\n[yellow]About to remove schedule:[/yellow]")
+        _display_schedule_info(info)
+        confirm = typer.confirm("\nAre you sure you want to remove this schedule?")
+        if not confirm:
+            console.print("[dim]Aborted[/dim]")
+            return
+
+    success = scheduler.remove_schedule()
+
+    if success:
+        console.print("\n[green]✓ Backup schedule removed successfully[/green]")
+    else:
+        console.print("\n[red]✗ Failed to remove backup schedule[/red]")
         raise typer.Exit(code=1)
 
 

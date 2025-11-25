@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Complete repository bootstrap
+"""Complete repository bootstrap
 
 Runs all setup and configuration scripts in the correct order:
 1. Configure repository (visibility, features, security, branch protection)
@@ -37,7 +36,7 @@ class RepositoryBootstrap:
         dry_run: bool = False,
         skip_config: bool = False,
         skip_issues: bool = False,
-        verify_only: bool = False
+        verify_only: bool = False,
     ):
         self.dry_run = dry_run
         self.skip_config = skip_config
@@ -68,10 +67,12 @@ class RepositoryBootstrap:
             steps.append(("Repository Configuration", self.configure_repository))
 
         # Add setup steps
-        steps.extend([
-            ("Create Labels", self.create_labels),
-            ("Create Milestones", self.create_milestones),
-        ])
+        steps.extend(
+            [
+                ("Create Labels", self.create_labels),
+                ("Create Milestones", self.create_milestones),
+            ]
+        )
 
         # Add issue creation step
         if not self.skip_issues:
@@ -119,7 +120,7 @@ class RepositoryBootstrap:
         if self.dry_run:
             cmd.append("--dry-run")
 
-        result = subprocess.run(cmd)
+        result = subprocess.run(cmd, check=False)
         return result.returncode == 0
 
     def create_labels(self) -> bool:
@@ -130,7 +131,7 @@ class RepositoryBootstrap:
         if self.dry_run:
             cmd.append("--dry-run")
 
-        result = subprocess.run(cmd)
+        result = subprocess.run(cmd, check=False)
         return result.returncode == 0
 
     def create_milestones(self) -> bool:
@@ -141,7 +142,7 @@ class RepositoryBootstrap:
         if self.dry_run:
             cmd.append("--dry-run")
 
-        result = subprocess.run(cmd)
+        result = subprocess.run(cmd, check=False)
         return result.returncode == 0
 
     def create_issues(self) -> bool:
@@ -152,7 +153,7 @@ class RepositoryBootstrap:
         if self.dry_run:
             cmd.append("--dry-run")
 
-        result = subprocess.run(cmd)
+        result = subprocess.run(cmd, check=False)
         return result.returncode == 0
 
     def verify_configuration(self) -> bool:
@@ -161,7 +162,7 @@ class RepositoryBootstrap:
 
         cmd = [sys.executable, str(script), "--verify-only"]
 
-        result = subprocess.run(cmd)
+        result = subprocess.run(cmd, check=False)
         return result.returncode == 0
 
     def print_summary(self, results: list[tuple[str, bool]]) -> None:
@@ -211,28 +212,24 @@ def main() -> int:
     """Main entry point."""
     import argparse
 
-    parser = argparse.ArgumentParser(
-        description="Bootstrap GitHub repository with complete setup"
-    )
+    parser = argparse.ArgumentParser(description="Bootstrap GitHub repository with complete setup")
     parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Preview all changes without applying them"
+        "--dry-run", action="store_true", help="Preview all changes without applying them"
     )
     parser.add_argument(
         "--skip-config",
         action="store_true",
-        help="Skip repository configuration (only create labels/milestones/issues)"
+        help="Skip repository configuration (only create labels/milestones/issues)",
     )
     parser.add_argument(
         "--skip-issues",
         action="store_true",
-        help="Skip issue creation (only configure repository and create labels/milestones)"
+        help="Skip issue creation (only configure repository and create labels/milestones)",
     )
     parser.add_argument(
         "--verify-only",
         action="store_true",
-        help="Only verify current configuration, don't make changes"
+        help="Only verify current configuration, don't make changes",
     )
 
     args = parser.parse_args()
@@ -241,7 +238,7 @@ def main() -> int:
         dry_run=args.dry_run,
         skip_config=args.skip_config,
         skip_issues=args.skip_issues,
-        verify_only=args.verify_only
+        verify_only=args.verify_only,
     )
 
     success = bootstrap.run()
