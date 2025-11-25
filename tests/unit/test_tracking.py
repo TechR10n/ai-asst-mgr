@@ -109,6 +109,39 @@ class TestVendorSessionTracker:
         assert stats is not None
         assert stats["tool_calls"] == 1
 
+    def test_log_tool_call_with_output(self, tracker: VendorSessionTracker) -> None:
+        """Verify log_tool_call accepts output parameter and hashes it."""
+        session_id = tracker.start_session()
+        tracker.log_tool_call(session_id, "Read", tool_output="File content here")
+
+        stats = tracker.get_session_stats(session_id)
+        assert stats is not None
+        assert stats["tool_calls"] == 1
+
+    def test_log_tool_call_without_active_session(self, tracker: VendorSessionTracker) -> None:
+        """Verify log_tool_call works for non-active session."""
+        # Log tool call without starting session first
+        tracker.log_tool_call("unknown-session", "Read", tool_input={"file": "test.py"})
+        # Should not raise an error
+
+    def test_log_tool_call_with_vendor_override(self, tracker: VendorSessionTracker) -> None:
+        """Verify log_tool_call accepts vendor override."""
+        session_id = tracker.start_session()
+        tracker.log_tool_call(session_id, "Read", vendor_id="gemini")
+
+        stats = tracker.get_session_stats(session_id)
+        assert stats is not None
+        assert stats["tool_calls"] == 1
+
+    def test_log_tool_call_with_success_false(self, tracker: VendorSessionTracker) -> None:
+        """Verify log_tool_call records failure status."""
+        session_id = tracker.start_session()
+        tracker.log_tool_call(session_id, "Read", success=False)
+
+        stats = tracker.get_session_stats(session_id)
+        assert stats is not None
+        assert stats["tool_calls"] == 1
+
     def test_log_message(self, tracker: VendorSessionTracker) -> None:
         """Verify log_message records message."""
         session_id = tracker.start_session()
@@ -128,6 +161,21 @@ class TestVendorSessionTracker:
         assert stats is not None
         assert stats["messages"] == 1
 
+    def test_log_message_without_active_session(self, tracker: VendorSessionTracker) -> None:
+        """Verify log_message works for non-active session."""
+        # Log message without starting session first
+        tracker.log_message("unknown-session", "user", content_length=50)
+        # Should not raise an error
+
+    def test_log_message_with_vendor_override(self, tracker: VendorSessionTracker) -> None:
+        """Verify log_message accepts vendor override."""
+        session_id = tracker.start_session()
+        tracker.log_message(session_id, "assistant", vendor_id="openai")
+
+        stats = tracker.get_session_stats(session_id)
+        assert stats is not None
+        assert stats["messages"] == 1
+
     def test_log_error(self, tracker: VendorSessionTracker) -> None:
         """Verify log_error records error."""
         session_id = tracker.start_session()
@@ -141,6 +189,21 @@ class TestVendorSessionTracker:
         """Verify log_error records error message."""
         session_id = tracker.start_session()
         tracker.log_error(session_id, "AuthError", error_message="Invalid API key")
+
+        stats = tracker.get_session_stats(session_id)
+        assert stats is not None
+        assert stats["errors"] == 1
+
+    def test_log_error_without_active_session(self, tracker: VendorSessionTracker) -> None:
+        """Verify log_error works for non-active session."""
+        # Log error without starting session first
+        tracker.log_error("unknown-session", "TestError", error_message="Test error")
+        # Should not raise an error
+
+    def test_log_error_with_vendor_override(self, tracker: VendorSessionTracker) -> None:
+        """Verify log_error accepts vendor override."""
+        session_id = tracker.start_session()
+        tracker.log_error(session_id, "NetworkError", vendor_id="gemini")
 
         stats = tracker.get_session_stats(session_id)
         assert stats is not None
@@ -245,6 +308,22 @@ class TestCredentialRedaction:
         result = tracker._redact_credentials(data)
         assert "REDACTED" in result["api_key"]
         assert result["safe"] == "normal value"
+
+    def test_redact_credentials_with_non_string_values(self, tracker: VendorSessionTracker) -> None:
+        """Verify non-string/non-dict values are preserved in redaction."""
+        data = {
+            "count": 42,
+            "enabled": True,
+            "ratio": 3.14,
+            "items": [1, 2, 3],
+            "nothing": None,
+        }
+        result = tracker._redact_credentials(data)
+        assert result["count"] == 42
+        assert result["enabled"] is True
+        assert result["ratio"] == 3.14
+        assert result["items"] == [1, 2, 3]
+        assert result["nothing"] is None
 
     def test_hash_content(self, tracker: VendorSessionTracker) -> None:
         """Verify content hashing works correctly."""

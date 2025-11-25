@@ -40,6 +40,7 @@ class TestSchemaSQL:
             "weekly_aggregates",
             "coaching_insights",
             "capabilities",
+            "github_commits",
         ]
         for table in expected_tables:
             assert f"CREATE TABLE IF NOT EXISTS {table}" in sql
@@ -432,6 +433,20 @@ class TestDatabaseManager:
             assert row["errors_count"] == 1
             assert row["end_time"] is not None
 
+    def test_end_session_nonexistent_session(self, db_manager: DatabaseManager) -> None:
+        """Verify end_session handles nonexistent session gracefully."""
+        # End a session that was never started - should not crash
+        # This tests the case where row is None (line 544->548 branch)
+        db_manager.end_session("nonexistent-sess", tool_calls_count=5)
+
+        # Verify that no session was created (UPDATE doesn't create rows)
+        with sqlite3.connect(db_manager.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute("SELECT * FROM sessions WHERE session_id = 'nonexistent-sess'")
+            row = cursor.fetchone()
+            # Session doesn't exist, so row should be None
+            assert row is None
+
     def test_record_event(self, db_manager: DatabaseManager) -> None:
         """Verify record_event creates event record."""
         db_manager.record_session("sess-1", "claude")
@@ -523,6 +538,30 @@ class TestDatabaseManager:
         results = db_manager.get_agent_usage_history()
         assert results == []
 
+    def test_get_agent_usage_history_with_agent_name(self, db_manager: DatabaseManager) -> None:
+        """Verify get_agent_usage_history filters by agent name."""
+        # Insert capabilities
+        with sqlite3.connect(db_manager.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO capabilities (vendor_id, capability_type, capability_name)
+                VALUES ('claude', 'agent', 'test-agent')
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO capabilities (vendor_id, capability_type, capability_name)
+                VALUES ('gemini', 'agent', 'other-agent')
+                """
+            )
+            conn.commit()
+
+        # Query for specific agent
+        results = db_manager.get_agent_usage_history(agent_name="test-agent")
+        assert len(results) == 1
+        assert results[0].agent_name == "test-agent"
+        assert results[0].vendor_id == "claude"
+
     def test_get_tool_usage(self, db_manager: DatabaseManager) -> None:
         """Verify get_tool_usage returns tool statistics."""
         db_manager.record_session("sess-1", "claude")
@@ -532,6 +571,21 @@ class TestDatabaseManager:
 
         results = db_manager.get_tool_usage("claude")
         assert len(results) >= 0
+
+    def test_get_tool_usage_all_vendors(self, db_manager: DatabaseManager) -> None:
+        """Verify get_tool_usage returns tool statistics for all vendors."""
+        db_manager.record_session("sess-1", "claude")
+        db_manager.record_event("sess-1", "claude", "tool_call", "Read")
+        db_manager.record_session("sess-2", "gemini")
+        db_manager.record_event("sess-2", "gemini", "tool_call", "Write")
+
+        # Query without vendor_id to get all vendors
+        results = db_manager.get_tool_usage(vendor_id=None)
+        assert len(results) >= 2
+        # Should include vendor_id in results when no filter is applied
+        vendor_ids = [r["vendor_id"] for r in results]
+        assert "claude" in vendor_ids
+        assert "gemini" in vendor_ids
 
 
 class TestMigrationManager:
@@ -704,6 +758,163 @@ class TestMigrationManager:
             assert result.events_migrated == 0
             assert result.success
 
+    def test_migrate_with_database_reading_error(self, target_db: Path) -> None:
+        """Verify migration handles sqlite3.Error during reading tables."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_db = Path(temp_dir) / "corrupted.db"
+
+            # Create a corrupted database file
+            source_db.write_text("This is not a valid SQLite database")
+
+            manager = MigrationManager(target_db)
+            result = manager.migrate_from_claude_sessions(source_db, create_backup=False)
+
+            assert not result.success
+            assert len(result.errors) > 0
+            # The error occurs during table reading, not connection (lines 154-155, 191-192)
+            assert any("Error reading" in error for error in result.errors)
+
+    def test_migrate_with_session_reading_error(self, target_db: Path) -> None:
+        """Verify migration handles errors when reading sessions."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_db = Path(temp_dir) / "source.db"
+
+            # Create source with sessions table
+            with sqlite3.connect(source_db) as conn:
+                conn.execute("""
+                    CREATE TABLE sessions (
+                        id INTEGER PRIMARY KEY,
+                        session_id TEXT
+                    )
+                """)
+                conn.execute("INSERT INTO sessions (session_id) VALUES ('test')")
+                conn.commit()
+
+            # Now corrupt the sessions table structure
+            with sqlite3.connect(source_db) as conn:
+                # Create a view with same name to cause confusion
+                conn.execute("DROP TABLE sessions")
+                conn.execute("CREATE VIEW sessions AS SELECT 'fake' as id")
+                conn.commit()
+
+            manager = MigrationManager(target_db)
+            result = manager.migrate_from_claude_sessions(source_db, create_backup=False)
+
+            # Should handle the error gracefully
+            assert result.sessions_migrated == 0
+
+    def test_migrate_with_event_reading_error(self, target_db: Path) -> None:
+        """Verify migration handles errors when reading events."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_db = Path(temp_dir) / "source.db"
+
+            # Create source with events table
+            with sqlite3.connect(source_db) as conn:
+                conn.execute("""
+                    CREATE TABLE events (
+                        id INTEGER PRIMARY KEY,
+                        session_id TEXT
+                    )
+                """)
+                conn.execute("INSERT INTO events (session_id) VALUES ('test')")
+                conn.commit()
+
+            # Now corrupt the events table structure
+            with sqlite3.connect(source_db) as conn:
+                conn.execute("DROP TABLE events")
+                conn.execute("CREATE VIEW events AS SELECT 'fake' as id")
+                conn.commit()
+
+            manager = MigrationManager(target_db)
+            result = manager.migrate_from_claude_sessions(source_db, create_backup=False)
+
+            # Should handle the error gracefully
+            assert result.events_migrated == 0
+
+    def test_rollback_removes_existing_target(self, source_db: Path, target_db: Path) -> None:
+        """Verify rollback removes existing target database."""
+        manager = MigrationManager(target_db)
+        result = manager.migrate_from_claude_sessions(source_db)
+
+        # Verify target was created
+        assert target_db.exists()
+        assert result.backup_path is not None
+
+        # Perform rollback - this tests line 266->269 where target exists
+        success = manager.rollback(result.backup_path)
+
+        # Verify target was removed
+        assert success
+        assert not target_db.exists()
+
+    def test_validate_migration_with_null_vendor_ids(
+        self, source_db: Path, target_db: Path
+    ) -> None:
+        """Verify validation detects NULL vendor_id in sessions and events."""
+        manager = MigrationManager(target_db)
+        manager._schema_manager.initialize()
+
+        # Need to bypass NOT NULL constraint - recreate tables without it
+        with sqlite3.connect(target_db) as conn:
+            # Drop and recreate sessions table without NOT NULL on vendor_id
+            conn.execute("DROP TABLE sessions")
+            conn.execute("""
+                CREATE TABLE sessions (
+                    session_id TEXT PRIMARY KEY,
+                    vendor_id TEXT,
+                    project_path TEXT,
+                    start_time TEXT,
+                    end_time TEXT,
+                    duration_seconds INTEGER DEFAULT 0,
+                    tool_calls_count INTEGER DEFAULT 0,
+                    messages_count INTEGER DEFAULT 0,
+                    errors_count INTEGER DEFAULT 0
+                )
+            """)
+
+            # Drop and recreate events table without NOT NULL on vendor_id
+            conn.execute("DROP TABLE events")
+            conn.execute("""
+                CREATE TABLE events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT,
+                    vendor_id TEXT,
+                    event_type TEXT NOT NULL,
+                    event_name TEXT,
+                    event_data TEXT,
+                    timestamp TEXT DEFAULT (datetime('now'))
+                )
+            """)
+
+            # Now insert data with NULL vendor_id
+            conn.execute("""
+                INSERT INTO sessions (session_id, vendor_id, start_time)
+                VALUES ('test-session', NULL, '2024-01-15 10:00:00')
+            """)
+            conn.execute("""
+                INSERT INTO events (session_id, vendor_id, event_type, event_name)
+                VALUES ('test-session', NULL, 'tool_call', 'Read')
+            """)
+            conn.commit()
+
+        errors = manager.validate_migration()
+
+        # Should detect NULL vendor_ids (lines 283, 287)
+        assert len(errors) == 2
+        assert any("sessions without vendor_id" in error for error in errors)
+        assert any("events without vendor_id" in error for error in errors)
+
+    def test_validate_migration_without_database(self, target_db: Path) -> None:
+        """Verify validation when target database doesn't exist."""
+        manager = MigrationManager(target_db)
+
+        # Don't initialize - database doesn't exist
+        errors = manager.validate_migration()
+
+        # Should have error from schema validation (line 279->289 path taken)
+        assert len(errors) > 0
+        assert any("Database file does not exist" in error for error in errors)
+
 
 class TestMigrateConvenienceFunction:
     """Tests for migrate_from_claude_sessions convenience function."""
@@ -722,3 +933,398 @@ class TestMigrateConvenienceFunction:
             result = migrate_from_claude_sessions(source_path, target_path)
             assert result.success
             assert target_path.exists()
+
+
+class TestGitHubDatabaseMethods:
+    """Tests for GitHub commit tracking methods."""
+
+    @pytest.fixture
+    def db_with_schema(self) -> DatabaseManager:
+        """Create an in-memory database with full schema."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "test.db"
+            manager = SchemaManager(db_path)
+            manager.initialize()
+            yield DatabaseManager(db_path)
+
+    def test_record_github_commit_success(self, db_with_schema: DatabaseManager) -> None:
+        """Test recording a GitHub commit."""
+        from datetime import UTC, datetime
+
+        from ai_asst_mgr.operations.github_parser import GitHubCommit
+
+        commit = GitHubCommit(
+            sha="abc1234567890def",
+            repo="user/repo",
+            branch="main",
+            message="feat: add feature\n\nGenerated with [Claude Code]",
+            author_name="Test User",
+            author_email="test@example.com",
+            vendor_id="claude",
+            committed_at=datetime(2024, 1, 15, 10, 30, 0, tzinfo=UTC),
+        )
+
+        result = db_with_schema.record_github_commit(commit)
+        assert result is True
+
+    def test_record_duplicate_commit_updates(self, db_with_schema: DatabaseManager) -> None:
+        """Test that recording duplicate commit updates existing record (upsert)."""
+        from datetime import UTC, datetime
+
+        from ai_asst_mgr.operations.github_parser import GitHubCommit
+
+        # Insert initial commit
+        commit1 = GitHubCommit(
+            sha="abc1234567890def",
+            repo="user/repo",
+            branch="main",
+            message="initial message",
+            author_name="Test",
+            author_email="test@test.com",
+            vendor_id=None,
+            committed_at=datetime(2024, 1, 15, 10, 30, 0, tzinfo=UTC),
+        )
+        assert db_with_schema.record_github_commit(commit1) is True
+
+        # Update with same SHA but different message (upsert behavior)
+        commit2 = GitHubCommit(
+            sha="abc1234567890def",
+            repo="user/repo",
+            branch="main",
+            message="updated message",
+            author_name="Test",
+            author_email="test@test.com",
+            vendor_id="claude",
+            committed_at=datetime(2024, 1, 15, 10, 30, 0, tzinfo=UTC),
+        )
+        # Should succeed (upsert - INSERT OR REPLACE)
+        assert db_with_schema.record_github_commit(commit2) is True
+
+        # Verify the record was updated
+        record = db_with_schema.get_github_commit_by_sha("abc1234567890def")
+        assert record is not None
+        assert record.message == "updated message"
+        assert record.vendor_id == "claude"
+
+    def test_get_github_stats_empty(self, db_with_schema: DatabaseManager) -> None:
+        """Test get_github_stats with no commits."""
+        stats = db_with_schema.get_github_stats()
+        assert stats.total_commits == 0
+        assert stats.claude_commits == 0
+        assert stats.gemini_commits == 0
+        assert stats.openai_commits == 0
+        assert stats.repos_tracked == 0
+        assert stats.ai_attributed_commits == 0
+        assert stats.ai_percentage == 0.0
+
+    def test_get_github_stats_with_commits(self, db_with_schema: DatabaseManager) -> None:
+        """Test get_github_stats with various commits."""
+        from datetime import UTC, datetime
+
+        from ai_asst_mgr.operations.github_parser import GitHubCommit
+
+        # Add commits with different vendors
+        commits = [
+            GitHubCommit(
+                sha="abc123",
+                repo="repo1",
+                branch="main",
+                message="Claude commit",
+                author_name="A",
+                author_email="a@test.com",
+                vendor_id="claude",
+                committed_at=datetime(2024, 1, 1, tzinfo=UTC),
+            ),
+            GitHubCommit(
+                sha="def456",
+                repo="repo1",
+                branch="main",
+                message="Gemini commit",
+                author_name="B",
+                author_email="b@test.com",
+                vendor_id="gemini",
+                committed_at=datetime(2024, 1, 2, tzinfo=UTC),
+            ),
+            GitHubCommit(
+                sha="ghi789",
+                repo="repo2",
+                branch="main",
+                message="Human commit",
+                author_name="C",
+                author_email="c@test.com",
+                vendor_id=None,
+                committed_at=datetime(2024, 1, 3, tzinfo=UTC),
+            ),
+        ]
+
+        for commit in commits:
+            db_with_schema.record_github_commit(commit)
+
+        stats = db_with_schema.get_github_stats()
+        assert stats.total_commits == 3
+        assert stats.claude_commits == 1
+        assert stats.gemini_commits == 1
+        assert stats.openai_commits == 0
+        assert stats.repos_tracked == 2
+        assert stats.ai_attributed_commits == 2
+        assert abs(stats.ai_percentage - 66.67) < 0.1
+
+    def test_get_github_commits_all(self, db_with_schema: DatabaseManager) -> None:
+        """Test getting all commits without filters."""
+        from datetime import UTC, datetime
+
+        from ai_asst_mgr.operations.github_parser import GitHubCommit
+
+        commit = GitHubCommit(
+            sha="abc123",
+            repo="repo1",
+            branch="main",
+            message="Test",
+            author_name="Test",
+            author_email="test@test.com",
+            vendor_id="claude",
+            committed_at=datetime(2024, 1, 1, tzinfo=UTC),
+        )
+        db_with_schema.record_github_commit(commit)
+
+        commits = db_with_schema.get_github_commits()
+        assert len(commits) == 1
+        assert commits[0].sha == "abc123"
+        assert commits[0].vendor_id == "claude"
+
+    def test_get_github_commits_filter_by_vendor(self, db_with_schema: DatabaseManager) -> None:
+        """Test filtering commits by vendor."""
+        from datetime import UTC, datetime
+
+        from ai_asst_mgr.operations.github_parser import GitHubCommit
+
+        commits_data = [
+            ("abc123", "claude"),
+            ("def456", "gemini"),
+            ("ghi789", None),
+        ]
+
+        for sha, vendor in commits_data:
+            db_with_schema.record_github_commit(
+                GitHubCommit(
+                    sha=sha,
+                    repo="repo",
+                    branch="main",
+                    message="Test",
+                    author_name="Test",
+                    author_email="test@test.com",
+                    vendor_id=vendor,
+                    committed_at=datetime(2024, 1, 1, tzinfo=UTC),
+                )
+            )
+
+        # Filter by claude
+        commits = db_with_schema.get_github_commits(vendor_id="claude")
+        assert len(commits) == 1
+        assert commits[0].sha == "abc123"
+
+        # Filter by "none" (unattributed)
+        commits = db_with_schema.get_github_commits(vendor_id="none")
+        assert len(commits) == 1
+        assert commits[0].sha == "ghi789"
+
+    def test_get_github_commits_filter_by_repo(self, db_with_schema: DatabaseManager) -> None:
+        """Test filtering commits by repository."""
+        from datetime import UTC, datetime
+
+        from ai_asst_mgr.operations.github_parser import GitHubCommit
+
+        commits_data = [
+            ("abc123", "repo1"),
+            ("def456", "repo2"),
+        ]
+
+        for sha, repo in commits_data:
+            db_with_schema.record_github_commit(
+                GitHubCommit(
+                    sha=sha,
+                    repo=repo,
+                    branch="main",
+                    message="Test",
+                    author_name="Test",
+                    author_email="test@test.com",
+                    vendor_id=None,
+                    committed_at=datetime(2024, 1, 1, tzinfo=UTC),
+                )
+            )
+
+        commits = db_with_schema.get_github_commits(repo="repo1")
+        assert len(commits) == 1
+        assert commits[0].repo == "repo1"
+
+    def test_get_github_repos(self, db_with_schema: DatabaseManager) -> None:
+        """Test getting list of tracked repositories."""
+        from datetime import UTC, datetime
+
+        from ai_asst_mgr.operations.github_parser import GitHubCommit
+
+        repos = ["alpha-repo", "beta-repo", "gamma-repo"]
+        for i, repo in enumerate(repos):
+            db_with_schema.record_github_commit(
+                GitHubCommit(
+                    sha=f"sha{i}",
+                    repo=repo,
+                    branch="main",
+                    message="Test",
+                    author_name="Test",
+                    author_email="test@test.com",
+                    vendor_id=None,
+                    committed_at=datetime(2024, 1, 1, tzinfo=UTC),
+                )
+            )
+
+        result = db_with_schema.get_github_repos()
+        assert len(result) == 3
+        assert "alpha-repo" in result
+        assert "beta-repo" in result
+        assert "gamma-repo" in result
+
+    def test_get_github_commit_by_sha(self, db_with_schema: DatabaseManager) -> None:
+        """Test getting commit by SHA."""
+        from datetime import UTC, datetime
+
+        from ai_asst_mgr.operations.github_parser import GitHubCommit
+
+        db_with_schema.record_github_commit(
+            GitHubCommit(
+                sha="abc123def456ghi",
+                repo="repo",
+                branch="main",
+                message="Test",
+                author_name="Test",
+                author_email="test@test.com",
+                vendor_id="claude",
+                committed_at=datetime(2024, 1, 1, tzinfo=UTC),
+            )
+        )
+
+        # Full SHA
+        commit = db_with_schema.get_github_commit_by_sha("abc123def456ghi")
+        assert commit is not None
+        assert commit.sha == "abc123def456ghi"
+
+        # Partial SHA
+        commit = db_with_schema.get_github_commit_by_sha("abc123")
+        assert commit is not None
+        assert commit.sha == "abc123def456ghi"
+
+        # Non-existent
+        commit = db_with_schema.get_github_commit_by_sha("nonexistent")
+        assert commit is None
+
+    def test_github_stats_properties(self, db_with_schema: DatabaseManager) -> None:
+        """Test GitHubStats computed properties."""
+        from ai_asst_mgr.database.manager import GitHubStats
+
+        stats = GitHubStats(
+            total_commits=100,
+            claude_commits=25,
+            gemini_commits=15,
+            openai_commits=10,
+            repos_tracked=5,
+            first_commit="2024-01-01",
+            last_commit="2024-12-31",
+        )
+
+        assert stats.ai_attributed_commits == 50
+        assert stats.ai_percentage == 50.0
+
+    def test_github_stats_zero_division(self, db_with_schema: DatabaseManager) -> None:
+        """Test GitHubStats handles zero total commits."""
+        from ai_asst_mgr.database.manager import GitHubStats
+
+        stats = GitHubStats(
+            total_commits=0,
+            claude_commits=0,
+            gemini_commits=0,
+            openai_commits=0,
+            repos_tracked=0,
+            first_commit=None,
+            last_commit=None,
+        )
+
+        assert stats.ai_percentage == 0.0
+
+    def test_record_github_commit_database_error(self, db_with_schema: DatabaseManager) -> None:
+        """Test record_github_commit handles database errors gracefully."""
+        from datetime import UTC, datetime
+
+        from ai_asst_mgr.operations.github_parser import GitHubCommit
+
+        # Close the database connection to force an error
+        db_with_schema.db_path.unlink()
+
+        commit = GitHubCommit(
+            sha="abc123",
+            repo="repo",
+            branch="main",
+            message="Test",
+            author_name="Test",
+            author_email="test@test.com",
+            vendor_id="claude",
+            committed_at=datetime(2024, 1, 1, tzinfo=UTC),
+        )
+
+        # Should return False on database error
+        result = db_with_schema.record_github_commit(commit)
+        assert result is False
+
+    def test_get_github_commits_table_not_exists(self) -> None:
+        """Test get_github_commits returns empty list when table doesn't exist."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "old_schema.db"
+            # Create database without github_commits table (old schema)
+            with sqlite3.connect(db_path) as conn:
+                conn.execute("CREATE TABLE dummy (id INTEGER)")
+                conn.commit()
+
+            manager = DatabaseManager(db_path)
+            commits = manager.get_github_commits()
+            assert commits == []
+
+    def test_get_github_repos_table_not_exists(self) -> None:
+        """Test get_github_repos returns empty list when table doesn't exist."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "old_schema.db"
+            # Create database without github_commits table (old schema)
+            with sqlite3.connect(db_path) as conn:
+                conn.execute("CREATE TABLE dummy (id INTEGER)")
+                conn.commit()
+
+            manager = DatabaseManager(db_path)
+            repos = manager.get_github_repos()
+            assert repos == []
+
+    def test_get_github_commit_by_sha_table_not_exists(self) -> None:
+        """Test get_github_commit_by_sha returns None when table doesn't exist."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "old_schema.db"
+            # Create database without github_commits table (old schema)
+            with sqlite3.connect(db_path) as conn:
+                conn.execute("CREATE TABLE dummy (id INTEGER)")
+                conn.commit()
+
+            manager = DatabaseManager(db_path)
+            commit = manager.get_github_commit_by_sha("abc123")
+            assert commit is None
+
+    def test_get_github_stats_table_not_exists(self) -> None:
+        """Test get_github_stats returns empty stats when table doesn't exist."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "old_schema.db"
+            # Create database without github_commits table (old schema)
+            with sqlite3.connect(db_path) as conn:
+                conn.execute("CREATE TABLE dummy (id INTEGER)")
+                conn.commit()
+
+            manager = DatabaseManager(db_path)
+            stats = manager.get_github_stats()
+            # Should return empty stats, not raise error
+            assert stats.total_commits == 0
+            assert stats.claude_commits == 0
+            assert stats.repos_tracked == 0

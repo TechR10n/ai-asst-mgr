@@ -37,6 +37,25 @@ class TestCreateApp:
         app = create_app()
         assert app.version == "0.1.0"
 
+    @patch("ai_asst_mgr.web.app.STATIC_DIR")
+    def test_create_app_handles_missing_static_dir(self, mock_static_dir: MagicMock) -> None:
+        """Test that create_app handles missing static directory gracefully."""
+        from pathlib import Path
+
+        # Mock STATIC_DIR to not exist
+        mock_path = MagicMock(spec=Path)
+        mock_path.exists.return_value = False
+        mock_static_dir.__eq__ = lambda self, other: False
+        mock_static_dir.exists.return_value = False
+
+        # Create app - should not raise an error
+        app = create_app()
+        assert app is not None
+
+        # Verify static files were not mounted (no route named "static")
+        route_names = [route.name for route in app.routes if hasattr(route, "name")]
+        assert "static" not in route_names
+
 
 class TestPageRoutes:
     """Tests for HTML page routes."""
@@ -378,6 +397,52 @@ class TestErrorHandling:
         response = client.get("/api/unknown")
         assert response.status_code == 404
         assert response.headers["content-type"] == "application/json"
+
+    def test_404_page_returns_html_error(self, client: TestClient) -> None:
+        """Test that 404 for regular pages returns HTML with error message."""
+        response = client.get("/unknown-page")
+        assert response.status_code == 404
+        assert b"404" in response.content
+        assert b"Page not found" in response.content
+
+    def test_404_api_returns_json_error(self, client: TestClient) -> None:
+        """Test that 404 for API endpoints returns JSON error details."""
+        response = client.get("/api/unknown-endpoint")
+        assert response.status_code == 404
+        data = response.json()
+        assert data["error"] == "Not found"
+        assert "/api/unknown-endpoint" in data["path"]
+
+    @patch("ai_asst_mgr.web.routes.api.get_github_commits_data")
+    def test_500_api_error_returns_json(self, mock_commits: MagicMock) -> None:
+        """Test that 500 errors for API endpoints return JSON."""
+        # Make the API endpoint raise an exception
+        mock_commits.side_effect = Exception("Database error")
+
+        # Create a client that doesn't raise server exceptions
+        app = create_app()
+        client = TestClient(app, raise_server_exceptions=False)
+
+        response = client.get("/api/github/commits")
+        assert response.status_code == 500
+        assert response.headers["content-type"] == "application/json"
+        data = response.json()
+        assert data["error"] == "Internal server error"
+
+    @patch("ai_asst_mgr.web.routes.pages.get_github_commits_data")
+    def test_500_page_error_returns_html(self, mock_commits: MagicMock) -> None:
+        """Test that 500 errors for regular pages return HTML."""
+        # Make the page route raise an exception
+        mock_commits.side_effect = Exception("Database error")
+
+        # Create a client that doesn't raise server exceptions
+        app = create_app()
+        client = TestClient(app, raise_server_exceptions=False)
+
+        response = client.get("/github")
+        assert response.status_code == 500
+        assert b"500" in response.content
+        assert b"Internal server error" in response.content
 
 
 class TestCLIServeCommand:
@@ -805,6 +870,50 @@ class TestServiceExceptionHandling:
 
     @patch("ai_asst_mgr.web.services.get_installed_vendors")
     @patch("ai_asst_mgr.web.services.get_vendor_adapter")
+    def test_get_dashboard_data_adapter_none(
+        self, mock_adapter: MagicMock, mock_vendors: MagicMock
+    ) -> None:
+        """Test get_dashboard_data when adapter is None."""
+        from ai_asst_mgr.web.services import get_dashboard_data
+
+        mock_vendors.return_value = ["unknown"]
+        mock_adapter.return_value = None
+
+        data = get_dashboard_data()
+        assert len(data["vendors"]) == 0
+
+    @patch("ai_asst_mgr.web.services.get_installed_vendors")
+    @patch("ai_asst_mgr.web.services.get_vendor_adapter")
+    def test_get_agents_data_adapter_none(
+        self, mock_adapter: MagicMock, mock_vendors: MagicMock
+    ) -> None:
+        """Test get_agents_data when adapter is None."""
+        from ai_asst_mgr.web.services import get_agents_data
+
+        mock_vendors.return_value = ["unknown"]
+        mock_adapter.return_value = None
+
+        data = get_agents_data()
+        assert "unknown" not in data["agents_by_vendor"]
+
+    @patch("ai_asst_mgr.web.services.get_installed_vendors")
+    @patch("ai_asst_mgr.web.services.get_vendor_adapter")
+    def test_get_agents_data_adapter_not_installed(
+        self, mock_adapter: MagicMock, mock_vendors: MagicMock
+    ) -> None:
+        """Test get_agents_data when adapter is not installed."""
+        from ai_asst_mgr.web.services import get_agents_data
+
+        mock_vendors.return_value = ["claude"]
+        adapter = MagicMock()
+        adapter.is_installed.return_value = False
+        mock_adapter.return_value = adapter
+
+        data = get_agents_data()
+        assert "claude" not in data["agents_by_vendor"]
+
+    @patch("ai_asst_mgr.web.services.get_installed_vendors")
+    @patch("ai_asst_mgr.web.services.get_vendor_adapter")
     def test_get_agents_data_attribute_error(
         self, mock_adapter: MagicMock, mock_vendors: MagicMock
     ) -> None:
@@ -839,6 +948,69 @@ class TestServiceExceptionHandling:
 
     @patch("ai_asst_mgr.web.services.get_installed_vendors")
     @patch("ai_asst_mgr.web.services.get_vendor_adapter")
+    def test_get_weekly_review_data_adapter_none(
+        self, mock_adapter: MagicMock, mock_vendors: MagicMock
+    ) -> None:
+        """Test get_weekly_review_data when adapter is None."""
+        from ai_asst_mgr.web.services import get_weekly_review_data
+
+        mock_vendors.return_value = ["unknown"]
+        mock_adapter.return_value = None
+
+        data = get_weekly_review_data()
+        assert len(data["vendors"]) == 0
+
+    @patch("ai_asst_mgr.web.services.get_installed_vendors")
+    @patch("ai_asst_mgr.web.services.get_vendor_adapter")
+    def test_get_weekly_review_data_adapter_not_installed(
+        self, mock_adapter: MagicMock, mock_vendors: MagicMock
+    ) -> None:
+        """Test get_weekly_review_data when adapter is not installed."""
+        from ai_asst_mgr.web.services import get_weekly_review_data
+
+        mock_vendors.return_value = ["claude"]
+        adapter = MagicMock()
+        adapter.info.name = "Claude"
+        adapter.is_installed.return_value = False
+        mock_adapter.return_value = adapter
+
+        data = get_weekly_review_data()
+        assert len(data["vendors"]) == 0
+
+    @patch("ai_asst_mgr.web.services.get_installed_vendors")
+    @patch("ai_asst_mgr.web.services.get_vendor_adapter")
+    def test_get_stats_data_adapter_none(
+        self, mock_adapter: MagicMock, mock_vendors: MagicMock
+    ) -> None:
+        """Test get_stats_data when adapter is None."""
+        from ai_asst_mgr.web.services import get_stats_data
+
+        mock_vendors.return_value = ["unknown"]
+        mock_adapter.return_value = None
+
+        data = get_stats_data()
+        assert data["installed_vendors"] == 0
+        assert data["total_agents"] == 0
+
+    @patch("ai_asst_mgr.web.services.get_installed_vendors")
+    @patch("ai_asst_mgr.web.services.get_vendor_adapter")
+    def test_get_stats_data_adapter_not_installed(
+        self, mock_adapter: MagicMock, mock_vendors: MagicMock
+    ) -> None:
+        """Test get_stats_data when adapter is not installed."""
+        from ai_asst_mgr.web.services import get_stats_data
+
+        mock_vendors.return_value = ["claude"]
+        adapter = MagicMock()
+        adapter.is_installed.return_value = False
+        mock_adapter.return_value = adapter
+
+        data = get_stats_data()
+        assert data["installed_vendors"] == 0
+        assert data["total_agents"] == 0
+
+    @patch("ai_asst_mgr.web.services.get_installed_vendors")
+    @patch("ai_asst_mgr.web.services.get_vendor_adapter")
     def test_get_stats_data_list_agents_exception(
         self, mock_adapter: MagicMock, mock_vendors: MagicMock
     ) -> None:
@@ -854,6 +1026,34 @@ class TestServiceExceptionHandling:
         data = get_stats_data()
         assert data["total_agents"] == 0
         assert data["installed_vendors"] == 1
+
+    @patch("ai_asst_mgr.web.services.get_installed_vendors")
+    @patch("ai_asst_mgr.web.services.get_vendor_adapter")
+    def test_get_vendors_data_adapter_none(
+        self, mock_adapter: MagicMock, mock_vendors: MagicMock
+    ) -> None:
+        """Test get_vendors_data when adapter is None."""
+        from ai_asst_mgr.web.services import get_vendors_data
+
+        mock_vendors.return_value = ["unknown"]
+        mock_adapter.return_value = None
+
+        data = get_vendors_data()
+        assert len(data["vendors"]) == 0
+
+    @patch("ai_asst_mgr.web.services.get_installed_vendors")
+    @patch("ai_asst_mgr.web.services.get_coach")
+    def test_get_coaching_data_coach_none(
+        self, mock_coach: MagicMock, mock_vendors: MagicMock
+    ) -> None:
+        """Test get_coaching_data when coach is None."""
+        from ai_asst_mgr.web.services import get_coaching_data
+
+        mock_vendors.return_value = ["unknown"]
+        mock_coach.return_value = None
+
+        data = get_coaching_data()
+        assert len(data["coaching"]) == 0
 
     @patch("ai_asst_mgr.web.services.get_installed_vendors")
     @patch("ai_asst_mgr.web.services.get_coach")
@@ -916,3 +1116,277 @@ class TestAgentDetailAPI:
         data = response.json()
         assert data["found"] is True
         assert data["agent"]["name"] == "test-agent"
+
+
+class TestGitHubPageRoutes:
+    """Tests for GitHub page routes."""
+
+    @pytest.fixture
+    def client(self) -> TestClient:
+        """Create a test client."""
+        app = create_app()
+        return TestClient(app)
+
+    @patch("ai_asst_mgr.web.routes.pages.get_github_commits_data")
+    def test_github_page_returns_200(self, mock_commits: MagicMock, client: TestClient) -> None:
+        """Test that GitHub page returns 200 OK."""
+        mock_commits.return_value = {
+            "db_initialized": True,
+            "commits": [],
+            "repos": [],
+            "stats": {
+                "total_commits": 0,
+                "ai_commits": 0,
+                "ai_percentage": 0.0,
+                "repos_tracked": 0,
+            },
+            "filters": {"vendor_id": None, "repo": None},
+        }
+        response = client.get("/github")
+        assert response.status_code == 200
+
+    @patch("ai_asst_mgr.web.routes.pages.get_github_commits_data")
+    def test_github_page_with_vendor_filter(
+        self, mock_commits: MagicMock, client: TestClient
+    ) -> None:
+        """Test GitHub page with vendor filter."""
+        mock_commits.return_value = {
+            "db_initialized": True,
+            "commits": [],
+            "repos": [],
+            "stats": {
+                "total_commits": 0,
+                "ai_commits": 0,
+                "ai_percentage": 0.0,
+                "repos_tracked": 0,
+            },
+            "filters": {"vendor_id": "claude", "repo": None},
+        }
+        response = client.get("/github?vendor=claude")
+        assert response.status_code == 200
+        mock_commits.assert_called_with(vendor_id="claude", repo=None)
+
+    @patch("ai_asst_mgr.web.routes.pages.get_github_commits_data")
+    def test_github_page_with_repo_filter(
+        self, mock_commits: MagicMock, client: TestClient
+    ) -> None:
+        """Test GitHub page with repo filter."""
+        mock_commits.return_value = {
+            "db_initialized": True,
+            "commits": [],
+            "repos": ["test-repo"],
+            "stats": {
+                "total_commits": 0,
+                "ai_commits": 0,
+                "ai_percentage": 0.0,
+                "repos_tracked": 1,
+            },
+            "filters": {"vendor_id": None, "repo": "test-repo"},
+        }
+        response = client.get("/github?repo=test-repo")
+        assert response.status_code == 200
+        mock_commits.assert_called_with(vendor_id=None, repo="test-repo")
+
+
+class TestGitHubServices:
+    """Tests for GitHub-related service functions."""
+
+    @patch("ai_asst_mgr.web.services._get_db")
+    def test_get_github_summary_no_db(self, mock_db: MagicMock) -> None:
+        """Test get_github_summary when database not initialized."""
+        from ai_asst_mgr.web.services import get_github_summary
+
+        mock_db.return_value = None
+        data = get_github_summary()
+        assert data["db_initialized"] is False
+        assert data["total_commits"] == 0
+        assert data["ai_commits"] == 0
+        assert data["claude_commits"] == 0
+        assert data["ai_percentage"] == 0.0
+        assert data["repos_tracked"] == 0
+
+    @patch("ai_asst_mgr.web.services._get_db")
+    def test_get_github_summary_with_db(self, mock_db: MagicMock) -> None:
+        """Test get_github_summary with database."""
+        from ai_asst_mgr.web.services import get_github_summary
+
+        mock_db_instance = MagicMock()
+        mock_stats = MagicMock()
+        mock_stats.total_commits = 100
+        mock_stats.ai_attributed_commits = 50
+        mock_stats.claude_commits = 30
+        mock_stats.gemini_commits = 10
+        mock_stats.openai_commits = 10
+        mock_stats.ai_percentage = 50.0
+        mock_stats.repos_tracked = 5
+        mock_stats.first_commit = "2025-01-01"
+        mock_stats.last_commit = "2025-01-31"
+        mock_db_instance.get_github_stats.return_value = mock_stats
+        mock_db.return_value = mock_db_instance
+
+        data = get_github_summary()
+        assert data["db_initialized"] is True
+        assert data["total_commits"] == 100
+        assert data["ai_commits"] == 50
+        assert data["claude_commits"] == 30
+        assert data["gemini_commits"] == 10
+        assert data["openai_commits"] == 10
+        assert data["ai_percentage"] == 50.0
+        assert data["repos_tracked"] == 5
+        assert data["first_commit"] == "2025-01-01"
+        assert data["last_commit"] == "2025-01-31"
+
+    @patch("ai_asst_mgr.web.services._get_db")
+    def test_get_github_commits_data_no_db(self, mock_db: MagicMock) -> None:
+        """Test get_github_commits_data when database not initialized."""
+        from ai_asst_mgr.web.services import get_github_commits_data
+
+        mock_db.return_value = None
+        data = get_github_commits_data()
+        assert data["db_initialized"] is False
+        assert data["commits"] == []
+        assert data["total_commits"] == 0
+        assert data["repos"] == []
+
+    @patch("ai_asst_mgr.web.services._get_db")
+    def test_get_github_commits_data_with_db(self, mock_db: MagicMock) -> None:
+        """Test get_github_commits_data with database."""
+        from ai_asst_mgr.web.services import get_github_commits_data
+
+        mock_db_instance = MagicMock()
+
+        # Mock commit object
+        mock_commit = MagicMock()
+        mock_commit.sha = "abc123def456"
+        mock_commit.repo = "test/repo"
+        mock_commit.branch = "main"
+        mock_commit.message = "Test commit\n\nWith details"
+        mock_commit.author_name = "Test Author"
+        mock_commit.author_email = "test@example.com"
+        mock_commit.vendor_id = "claude"
+        mock_commit.committed_at = "2025-01-01T12:00:00"
+
+        mock_db_instance.get_github_commits.return_value = [mock_commit]
+        mock_db_instance.get_github_repos.return_value = ["test/repo", "another/repo"]
+
+        mock_stats = MagicMock()
+        mock_stats.total_commits = 100
+        mock_stats.ai_attributed_commits = 50
+        mock_stats.ai_percentage = 50.0
+        mock_stats.repos_tracked = 2
+        mock_db_instance.get_github_stats.return_value = mock_stats
+
+        mock_db.return_value = mock_db_instance
+
+        data = get_github_commits_data(vendor_id="claude", repo="test/repo", limit=25, offset=10)
+
+        assert data["db_initialized"] is True
+        assert len(data["commits"]) == 1
+        assert data["commits"][0]["sha"] == "abc123def456"
+        assert data["commits"][0]["short_sha"] == "abc123d"
+        assert data["commits"][0]["repo"] == "test/repo"
+        assert data["commits"][0]["branch"] == "main"
+        assert data["commits"][0]["message"] == "Test commit\n\nWith details"
+        assert data["commits"][0]["subject"] == "Test commit"
+        assert data["commits"][0]["author_name"] == "Test Author"
+        assert data["commits"][0]["author_email"] == "test@example.com"
+        assert data["commits"][0]["vendor_id"] == "claude"
+        assert data["commits"][0]["committed_at"] == "2025-01-01T12:00:00"
+
+        assert data["repos"] == ["test/repo", "another/repo"]
+        assert data["stats"]["total_commits"] == 100
+        assert data["stats"]["ai_commits"] == 50
+        assert data["stats"]["ai_percentage"] == 50.0
+        assert data["stats"]["repos_tracked"] == 2
+
+        assert data["filters"]["vendor_id"] == "claude"
+        assert data["filters"]["repo"] == "test/repo"
+
+        # Verify the db methods were called with correct parameters
+        mock_db_instance.get_github_commits.assert_called_once_with(
+            vendor_id="claude", repo="test/repo", limit=25, offset=10
+        )
+        mock_db_instance.get_github_repos.assert_called_once()
+        mock_db_instance.get_github_stats.assert_called_once()
+
+
+class TestGitHubAPIRoutes:
+    """Tests for GitHub API routes."""
+
+    @pytest.fixture
+    def client(self) -> TestClient:
+        """Create a test client."""
+        app = create_app()
+        return TestClient(app)
+
+    @patch("ai_asst_mgr.web.routes.api.get_github_summary")
+    def test_api_github_stats_returns_200(
+        self, mock_summary: MagicMock, client: TestClient
+    ) -> None:
+        """Test that /api/github/stats returns 200 OK."""
+        mock_summary.return_value = {
+            "db_initialized": True,
+            "total_commits": 100,
+            "ai_commits": 50,
+            "ai_percentage": 50.0,
+            "repos_tracked": 5,
+        }
+        response = client.get("/api/github/stats")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total_commits"] == 100
+        assert data["ai_percentage"] == 50.0
+
+    @patch("ai_asst_mgr.web.routes.api.get_github_commits_data")
+    def test_api_github_commits_returns_200(
+        self, mock_commits: MagicMock, client: TestClient
+    ) -> None:
+        """Test that /api/github/commits returns 200 OK."""
+        mock_commits.return_value = {
+            "db_initialized": True,
+            "commits": [
+                {
+                    "sha": "abc123",
+                    "short_sha": "abc1234",
+                    "repo": "test/repo",
+                    "message": "Test commit",
+                    "vendor_id": "claude",
+                }
+            ],
+            "repos": ["test/repo"],
+            "stats": {"total_commits": 1, "ai_commits": 1},
+        }
+        response = client.get("/api/github/commits")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["commits"]) == 1
+
+    @patch("ai_asst_mgr.web.routes.api.get_github_commits_data")
+    def test_api_github_commits_with_vendor_filter(
+        self, mock_commits: MagicMock, client: TestClient
+    ) -> None:
+        """Test /api/github/commits with vendor filter."""
+        mock_commits.return_value = {
+            "db_initialized": True,
+            "commits": [],
+            "repos": [],
+            "stats": {},
+        }
+        response = client.get("/api/github/commits?vendor=claude")
+        assert response.status_code == 200
+        mock_commits.assert_called_with(vendor_id="claude", repo=None, limit=50, offset=0)
+
+    @patch("ai_asst_mgr.web.routes.api.get_github_commits_data")
+    def test_api_github_commits_with_pagination(
+        self, mock_commits: MagicMock, client: TestClient
+    ) -> None:
+        """Test /api/github/commits with pagination parameters."""
+        mock_commits.return_value = {
+            "db_initialized": True,
+            "commits": [],
+            "repos": [],
+            "stats": {},
+        }
+        response = client.get("/api/github/commits?limit=25&offset=50")
+        assert response.status_code == 200
+        mock_commits.assert_called_with(vendor_id=None, repo=None, limit=25, offset=50)

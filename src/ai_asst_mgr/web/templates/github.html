@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+
+{% block title %}GitHub Activity - AI Assistant Manager{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>GitHub Activity</h1>
+    <p>Track AI vendor attribution in your commits</p>
+</div>
+
+{% if not data.db_initialized %}
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Database Not Initialized</h2>
+    </div>
+    <p>The GitHub tracking database has not been initialized yet.</p>
+    <p style="margin-top: 1rem;">Run these commands to set up GitHub tracking:</p>
+    <ul style="margin-top: 0.5rem; margin-left: 1.5rem;">
+        <li><code>ai-asst-mgr db init</code> - Initialize the database</li>
+        <li><code>ai-asst-mgr github sync ~/Developer</code> - Scan git repositories</li>
+    </ul>
+</div>
+{% else %}
+
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-value">{{ data.stats.total_commits }}</div>
+        <div class="stat-label">Total Commits</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">{{ data.stats.ai_commits }}</div>
+        <div class="stat-label">AI-Attributed</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">{{ "%.1f"|format(data.stats.ai_percentage) }}%</div>
+        <div class="stat-label">AI Percentage</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">{{ data.stats.repos_tracked }}</div>
+        <div class="stat-label">Repos Tracked</div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Filter by Vendor</h2>
+    </div>
+    <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
+        <a href="/github{% if data.filters.repo %}?repo={{ data.filters.repo | urlencode }}{% endif %}"
+           class="filter-btn {% if not data.filters.vendor_id %}active{% endif %}">
+            All
+        </a>
+        <a href="/github?vendor=claude{% if data.filters.repo %}&repo={{ data.filters.repo | urlencode }}{% endif %}"
+           class="filter-btn {% if data.filters.vendor_id == 'claude' %}active{% endif %}">
+            Claude
+        </a>
+        <a href="/github?vendor=gemini{% if data.filters.repo %}&repo={{ data.filters.repo | urlencode }}{% endif %}"
+           class="filter-btn {% if data.filters.vendor_id == 'gemini' %}active{% endif %}">
+            Gemini
+        </a>
+        <a href="/github?vendor=openai{% if data.filters.repo %}&repo={{ data.filters.repo | urlencode }}{% endif %}"
+           class="filter-btn {% if data.filters.vendor_id == 'openai' %}active{% endif %}">
+            OpenAI
+        </a>
+        <a href="/github?vendor=none{% if data.filters.repo %}&repo={{ data.filters.repo | urlencode }}{% endif %}"
+           class="filter-btn {% if data.filters.vendor_id == 'none' %}active{% endif %}">
+            Human
+        </a>
+    </div>
+</div>
+
+{% if data.repos %}
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Filter by Repository</h2>
+    </div>
+    <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
+        <a href="/github{% if data.filters.vendor_id %}?vendor={{ data.filters.vendor_id }}{% endif %}"
+           class="filter-btn {% if not data.filters.repo %}active{% endif %}">
+            All Repos
+        </a>
+        {% for repo in data.repos %}
+        <a href="/github?repo={{ repo | urlencode }}{% if data.filters.vendor_id %}&vendor={{ data.filters.vendor_id }}{% endif %}"
+           class="filter-btn {% if data.filters.repo == repo %}active{% endif %}"
+           title="{{ repo }}">
+            {{ repo }}
+        </a>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Recent Commits</h2>
+        <button class="refresh-btn"
+                hx-get="/api/github/commits{% if data.filters.vendor_id or data.filters.repo %}?{% endif %}{% if data.filters.vendor_id %}vendor={{ data.filters.vendor_id }}{% endif %}{% if data.filters.vendor_id and data.filters.repo %}&{% endif %}{% if data.filters.repo %}repo={{ data.filters.repo | urlencode }}{% endif %}"
+                hx-target="#commits-table-body"
+                hx-swap="innerHTML"
+                hx-indicator="#commits-loading">
+            Refresh
+            <span id="commits-loading" class="htmx-indicator">...</span>
+        </button>
+    </div>
+
+    {% if data.commits %}
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>SHA</th>
+                <th>Repository</th>
+                <th>Message</th>
+                <th>Author</th>
+                <th>Vendor</th>
+                <th>Date</th>
+            </tr>
+        </thead>
+        <tbody id="commits-table-body">
+            {% for commit in data.commits %}
+            <tr>
+                <td>
+                    <code class="commit-sha">{{ commit.short_sha }}</code>
+                </td>
+                <td>
+                    <span class="repo-name" title="{{ commit.repo }}">{{ commit.repo }}</span>
+                </td>
+                <td>
+                    <span class="commit-message" title="{{ commit.message }}">
+                        {{ commit.subject[:50] }}{% if commit.subject|length > 50 %}...{% endif %}
+                    </span>
+                </td>
+                <td>
+                    <span class="author-name" title="{{ commit.author_email }}">
+                        {{ commit.author_name }}
+                    </span>
+                </td>
+                <td>
+                    {% if commit.vendor_id == 'claude' %}
+                    <span class="badge badge-claude">Claude</span>
+                    {% elif commit.vendor_id == 'gemini' %}
+                    <span class="badge badge-gemini">Gemini</span>
+                    {% elif commit.vendor_id == 'openai' %}
+                    <span class="badge badge-openai">OpenAI</span>
+                    {% else %}
+                    <span class="badge badge-human">Human</span>
+                    {% endif %}
+                </td>
+                <td>
+                    <span class="timestamp">{{ commit.committed_at[:10] if commit.committed_at else 'Unknown' }}</span>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No commits found{% if data.filters.vendor_id or data.filters.repo %} with current filters{% endif %}.</p>
+    {% endif %}
+</div>
+
+{% endif %}
+{% endblock %}

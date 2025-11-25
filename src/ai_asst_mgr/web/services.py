@@ -454,3 +454,98 @@ def get_sessions_stats() -> dict[str, Any]:
         "last_synced": sync_status.get("last_synced_datetime"),
         "timestamp": datetime.now(tz=UTC).isoformat(),
     }
+
+
+def get_github_summary() -> dict[str, Any]:
+    """Get GitHub activity summary for main dashboard.
+
+    Returns:
+        Dictionary containing GitHub commit statistics.
+    """
+    db = _get_db()
+    if not db:
+        return {
+            "db_initialized": False,
+            "total_commits": 0,
+            "ai_commits": 0,
+            "claude_commits": 0,
+            "ai_percentage": 0.0,
+            "repos_tracked": 0,
+        }
+
+    stats = db.get_github_stats()
+
+    return {
+        "db_initialized": True,
+        "total_commits": stats.total_commits,
+        "ai_commits": stats.ai_attributed_commits,
+        "claude_commits": stats.claude_commits,
+        "gemini_commits": stats.gemini_commits,
+        "openai_commits": stats.openai_commits,
+        "ai_percentage": stats.ai_percentage,
+        "repos_tracked": stats.repos_tracked,
+        "first_commit": stats.first_commit,
+        "last_commit": stats.last_commit,
+    }
+
+
+def get_github_commits_data(
+    vendor_id: str | None = None,
+    repo: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Get GitHub commits data for the GitHub page.
+
+    Args:
+        vendor_id: Optional vendor filter (claude, gemini, openai, none).
+        repo: Optional repository name filter.
+        limit: Maximum number of commits to return.
+        offset: Number of commits to skip.
+
+    Returns:
+        Dictionary containing commit data.
+    """
+    db = _get_db()
+    if not db:
+        return {
+            "db_initialized": False,
+            "commits": [],
+            "total_commits": 0,
+            "repos": [],
+        }
+
+    commits = db.get_github_commits(vendor_id=vendor_id, repo=repo, limit=limit, offset=offset)
+    repos = db.get_github_repos()
+    stats = db.get_github_stats()
+
+    return {
+        "db_initialized": True,
+        "commits": [
+            {
+                "sha": c.sha,
+                "short_sha": c.sha[:7],
+                "repo": c.repo,
+                "branch": c.branch,
+                "message": c.message,
+                "subject": c.message.split("\n")[0],
+                "author_name": c.author_name,
+                "author_email": c.author_email,
+                "vendor_id": c.vendor_id,
+                "committed_at": c.committed_at,
+            }
+            for c in commits
+        ],
+        "repos": repos,
+        "stats": {
+            "total_commits": stats.total_commits,
+            "ai_commits": stats.ai_attributed_commits,
+            "ai_percentage": stats.ai_percentage,
+            "repos_tracked": stats.repos_tracked,
+        },
+        "filters": {
+            "vendor_id": vendor_id,
+            "repo": repo,
+        },
+        "timestamp": datetime.now(tz=UTC).isoformat(),
+    }

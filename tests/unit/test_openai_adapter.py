@@ -535,14 +535,14 @@ def test_health_check_missing_mcp_dir(adapter_with_temp_dir: OpenAIAdapter) -> N
 
 def test_initialize_error(adapter_with_temp_dir: OpenAIAdapter) -> None:
     """Test initialize handles OSError."""
-    with patch.object(Path, "mkdir", side_effect=OSError("Permission denied")):  # noqa: SIM117
+    with patch.object(Path, "mkdir", side_effect=OSError("Permission denied")):
         with pytest.raises(RuntimeError, match="Failed to initialize"):
             adapter_with_temp_dir.initialize()
 
 
 def test_backup_error(adapter_with_temp_dir: OpenAIAdapter, tmp_path: Path) -> None:
     """Test backup handles errors."""
-    with patch.object(tarfile, "open", side_effect=OSError("Write error")):  # noqa: SIM117
+    with patch.object(tarfile, "open", side_effect=OSError("Write error")):
         with pytest.raises(RuntimeError, match="Failed to create backup"):
             adapter_with_temp_dir.backup(tmp_path)
 
@@ -558,7 +558,7 @@ def test_restore_error(adapter_with_temp_dir: OpenAIAdapter, tmp_path: Path) -> 
     with tarfile.open(backup_file, "w:gz") as tar:
         tar.add(test_content, arcname="codex")
 
-    with patch.object(tarfile.TarFile, "extract", side_effect=OSError("Extract error")):  # noqa: SIM117
+    with patch.object(tarfile.TarFile, "extract", side_effect=OSError("Extract error")):
         with pytest.raises(RuntimeError, match="Failed to restore backup"):
             adapter_with_temp_dir.restore(backup_file)
 
@@ -613,7 +613,7 @@ def test_audit_config_with_mcp_and_agents_md(
 
 def test_save_config_error(adapter_with_temp_dir: OpenAIAdapter) -> None:
     """Test _save_config handles write errors."""
-    with patch.object(Path, "open", side_effect=OSError("Write error")):  # noqa: SIM117
+    with patch.object(Path, "open", side_effect=OSError("Write error")):
         with pytest.raises(RuntimeError, match="Failed to save config"):
             adapter_with_temp_dir._save_config({"api_key": "test"})
 
@@ -662,3 +662,107 @@ def test_get_usage_stats_malformed_config(
         # Should not crash, just not include profile_count
         assert "cli_available" in stats
         assert "profile_count" not in stats
+
+
+@patch("shutil.which")
+def test_get_status_error_on_load(
+    mock_which: MagicMock, adapter_with_temp_dir: OpenAIAdapter
+) -> None:
+    """Test get_status returns ERROR when config exists but can't be loaded."""
+    mock_which.return_value = "/usr/bin/codex"
+    adapter_with_temp_dir._save_config({"api_key": "test"})
+
+    # Mock _load_config to raise OSError after is_configured passes
+    original_load_config = adapter_with_temp_dir._load_config
+
+    call_count = [0]
+
+    def mock_load_config():
+        call_count[0] += 1
+        # First call is from is_configured, second call is in get_status
+        if call_count[0] == 1:
+            return original_load_config()
+        raise OSError("Read error")
+
+    with patch.object(adapter_with_temp_dir, "_load_config", side_effect=mock_load_config):
+        status = adapter_with_temp_dir.get_status()
+        assert status == VendorStatus.ERROR
+
+
+@patch("ai_asst_mgr.adapters.openai.git_clone")
+def test_sync_from_git_with_existing_temp_dir(
+    mock_git_clone: MagicMock, adapter_with_temp_dir: OpenAIAdapter
+) -> None:
+    """Test sync_from_git removes existing temp directory."""
+    # Create existing temp directory
+    temp_dir = adapter_with_temp_dir._config_dir.parent / "temp_git_clone"
+    temp_dir.mkdir()
+    (temp_dir / "old_file.txt").write_text("old content")
+
+    # Setup mock git clone
+    def create_fake_repo(_url: str, dest: Path, _branch: str) -> bool:
+        dest.mkdir(exist_ok=True)
+        (dest / "config.toml").write_text('[api]\nkey = "test"')
+        return True
+
+    mock_git_clone.side_effect = create_fake_repo
+
+    adapter_with_temp_dir.sync_from_git("https://github.com/test/repo.git")
+
+    # Verify old file was removed (temp dir was cleaned)
+    assert not (temp_dir / "old_file.txt").exists()
+
+
+@patch("ai_asst_mgr.adapters.openai.git_clone")
+def test_sync_from_git_with_existing_mcp_dir(
+    mock_git_clone: MagicMock, adapter_with_temp_dir: OpenAIAdapter
+) -> None:
+    """Test sync_from_git removes existing mcp_servers directory before copying."""
+    # Create existing mcp_servers directory with old content
+    mcp_dir = adapter_with_temp_dir._config_dir / "mcp_servers"
+    mcp_dir.mkdir()
+    (mcp_dir / "old_server.toml").write_text('[server]\nname = "old"')
+
+    # Setup mock git clone
+    def create_fake_repo(_url: str, dest: Path, _branch: str) -> bool:
+        dest.mkdir(exist_ok=True)
+        (dest / "mcp_servers").mkdir()
+        (dest / "mcp_servers" / "new_server.toml").write_text('[server]\nname = "new"')
+        return True
+
+    mock_git_clone.side_effect = create_fake_repo
+
+    adapter_with_temp_dir.sync_from_git("https://github.com/test/repo.git")
+
+    # Verify old server was removed and new server exists
+    assert not (mcp_dir / "old_server.toml").exists()
+    assert (mcp_dir / "new_server.toml").exists()
+
+
+def test_health_check_config_dir_not_exists(adapter_with_temp_dir: OpenAIAdapter) -> None:
+    """Test health_check when config directory doesn't exist."""
+    with patch("shutil.which") as mock_which:
+        mock_which.return_value = "/usr/bin/codex"
+
+        # Remove the config directory
+        adapter_with_temp_dir._config_dir.rmdir()
+
+        result = adapter_with_temp_dir.health_check()
+
+        assert result["healthy"] is False
+        assert result["checks"]["config_dir_exists"] is False
+        assert "Configuration directory not found" in result["errors"]
+
+
+def test_audit_optional_components_no_config_dir(
+    adapter_with_temp_dir: OpenAIAdapter,
+) -> None:
+    """Test _audit_optional_components when config directory doesn't exist."""
+    # Remove config directory
+    adapter_with_temp_dir._config_dir.rmdir()
+
+    recommendations: list[str] = []
+    adapter_with_temp_dir._audit_optional_components(recommendations)
+
+    # Should return early without adding recommendations
+    assert len(recommendations) == 0

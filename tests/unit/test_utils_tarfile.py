@@ -2,6 +2,7 @@
 
 import tarfile
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -255,6 +256,97 @@ class TestIsMemberSafe:
         member.linkname = "target.txt"
 
         assert is_member_safe(member, temp_dest_dir) is False
+
+    def test_is_member_safe_symlink_resolves_outside_bounds(
+        self, temp_dest_dir: Path, tmp_path: Path
+    ) -> None:
+        """Test symlink that resolves outside dest_dir is rejected (line 90)."""
+        # This test covers line 90: when a symlink's target passes initial safety
+        # checks but resolves to a path outside dest_dir.
+
+        # Strategy: patch is_path_safe to return True for the first check (line 80)
+        # Then let the actual resolution at lines 84-85 detect the escape
+
+        outside_path = tmp_path / "outside" / "evil.txt"
+        outside_path.parent.mkdir(exist_ok=True)
+
+        member = tarfile.TarInfo(name="link.txt")
+        member.type = tarfile.SYMTYPE
+        member.linkname = "target.txt"
+
+        # We need to patch BOTH is_path_safe AND Path.resolve in a coordinated way
+        # First, make is_path_safe return True for the line 80 check
+        # Then, make Path.resolve return outside_path for line 84
+
+        from ai_asst_mgr.utils import tarfile_safe
+
+        original_is_path_safe = tarfile_safe.is_path_safe
+        original_resolve = Path.resolve
+        is_path_safe_call_count = [0]
+        resolve_call_count = [0]
+
+        def mock_is_path_safe(member_path: str, dest_dir: Path) -> bool:
+            is_path_safe_call_count[0] += 1
+            # First call (line 72) checks member.name - let it pass
+            # Second call (line 80) checks link_target - make it pass
+            if is_path_safe_call_count[0] <= 2:
+                return True
+            # Other calls use original logic
+            return original_is_path_safe(member_path, dest_dir)
+
+        def mock_resolve(self: Path, *args, **kwargs) -> Path:
+            resolve_call_count[0] += 1
+            # First call is at line 84: (symlink_dir / link_target).resolve()
+            if resolve_call_count[0] == 1:
+                return outside_path  # Return path outside dest_dir
+            # Second call is at line 85: dest_dir.resolve()
+            return original_resolve(self, *args, **kwargs)
+
+        with patch.object(tarfile_safe, "is_path_safe", mock_is_path_safe):
+            with patch.object(Path, "resolve", mock_resolve):
+                result = is_member_safe(member, temp_dest_dir)
+
+        # Should return False because resolved link is outside dest_dir
+        assert result is False
+
+    def test_is_member_safe_symlink_resolution_value_error(
+        self, temp_dest_dir: Path, tmp_path: Path
+    ) -> None:
+        """Test that ValueError during symlink resolution is caught (line 92)."""
+        # Similar to the previous test, but this time raise an exception
+        # during resolution instead of returning an outside path
+
+        member = tarfile.TarInfo(name="link.txt")
+        member.type = tarfile.SYMTYPE
+        member.linkname = "target.txt"
+
+        from ai_asst_mgr.utils import tarfile_safe
+
+        original_is_path_safe = tarfile_safe.is_path_safe
+        original_resolve = Path.resolve
+        is_path_safe_call_count = [0]
+        resolve_call_count = [0]
+
+        def mock_is_path_safe(member_path: str, dest_dir: Path) -> bool:
+            is_path_safe_call_count[0] += 1
+            # First two calls should pass (line 72 and line 80)
+            if is_path_safe_call_count[0] <= 2:
+                return True
+            return original_is_path_safe(member_path, dest_dir)
+
+        def mock_resolve(self: Path, *args, **kwargs) -> Path:
+            resolve_call_count[0] += 1
+            # First call is at line 84: raise ValueError
+            if resolve_call_count[0] == 1:
+                raise ValueError("Simulated path resolution error")
+            return original_resolve(self, *args, **kwargs)
+
+        with patch.object(tarfile_safe, "is_path_safe", mock_is_path_safe):
+            with patch.object(Path, "resolve", mock_resolve):
+                result = is_member_safe(member, temp_dest_dir)
+
+        # Should return False when resolution raises ValueError
+        assert result is False
 
 
 class TestGetSafeMembers:

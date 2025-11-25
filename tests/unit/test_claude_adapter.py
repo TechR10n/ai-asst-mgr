@@ -585,3 +585,70 @@ def test_save_settings_error(mock_dump: Mock, adapter_with_temp_dir: ClaudeAdapt
 
     with pytest.raises(RuntimeError, match="Failed to save settings"):
         adapter_with_temp_dir._save_settings({"key": "value"})
+
+
+@patch("ai_asst_mgr.adapters.claude.git_clone")
+def test_sync_from_git_with_existing_temp_dir(
+    mock_git_clone: Mock,
+    adapter_with_temp_dir: ClaudeAdapter,
+) -> None:
+    """Test sync_from_git removes existing temp directory."""
+    # Create existing temp directory
+    temp_dir = adapter_with_temp_dir._config_dir.parent / "temp_git_clone"
+    temp_dir.mkdir()
+    (temp_dir / "old_file.txt").write_text("old content")
+
+    # Setup mock git clone to create temp repo
+    def create_temp_repo(_url: str, _dest: object, _branch: str) -> bool:
+        temp_dir.mkdir(exist_ok=True)
+        (temp_dir / "agents").mkdir()
+        (temp_dir / "agents" / "synced.md").write_text("# Synced")
+        return True
+
+    mock_git_clone.side_effect = create_temp_repo
+
+    adapter_with_temp_dir.sync_from_git("https://github.com/test/repo.git")
+
+    # Verify old file was removed (temp dir was cleaned)
+    assert not (temp_dir / "old_file.txt").exists()
+
+
+@patch("ai_asst_mgr.adapters.claude.git_clone")
+def test_sync_from_git_with_existing_dest_dir(
+    mock_git_clone: Mock,
+    adapter_with_temp_dir: ClaudeAdapter,
+) -> None:
+    """Test sync_from_git removes existing destination directory before copying."""
+    # Create existing agents directory with old content
+    agents_dir = adapter_with_temp_dir._config_dir / "agents"
+    agents_dir.mkdir()
+    (agents_dir / "old_agent.md").write_text("# Old Agent")
+
+    # Setup mock git clone
+    def create_temp_repo(_url: str, _dest: object, _branch: str) -> bool:
+        temp_dir = adapter_with_temp_dir._config_dir.parent / "temp_git_clone"
+        temp_dir.mkdir(exist_ok=True)
+        (temp_dir / "agents").mkdir()
+        (temp_dir / "agents" / "new_agent.md").write_text("# New Agent")
+        return True
+
+    mock_git_clone.side_effect = create_temp_repo
+
+    adapter_with_temp_dir.sync_from_git("https://github.com/test/repo.git")
+
+    # Verify old agent was removed and new agent exists
+    assert not (agents_dir / "old_agent.md").exists()
+    assert (agents_dir / "new_agent.md").exists()
+
+
+def test_health_check_not_configured(adapter_with_temp_dir: ClaudeAdapter) -> None:
+    """Test health_check when settings.json not found."""
+    # Directory exists but no settings.json
+    (adapter_with_temp_dir._config_dir / "agents").mkdir()
+    (adapter_with_temp_dir._config_dir / "skills").mkdir()
+
+    result = adapter_with_temp_dir.health_check()
+
+    assert result["healthy"] is False
+    assert result["checks"]["configured"] is False
+    assert "settings.json not found" in result["errors"]

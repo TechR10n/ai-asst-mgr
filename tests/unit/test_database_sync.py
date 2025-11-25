@@ -14,6 +14,7 @@ from ai_asst_mgr.database.sync import (
     SYNC_STATE_FILE,
     HistoryEntry,
     SyncResult,
+    _import_session,
     get_last_synced_timestamp,
     get_sync_status,
     group_by_session,
@@ -440,6 +441,90 @@ class TestSyncHistoryToDb:
         finally:
             temp_path.unlink()
 
+    def test_sync_no_new_entries_after_filter(self) -> None:
+        """Test sync when all entries are older than last sync timestamp."""
+        mock_db = MagicMock()
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+            old = {"display": "old", "timestamp": 1000, "project": "/p", "sessionId": "s1"}
+            f.write(json.dumps(old) + "\n")
+            temp_path = Path(f.name)
+
+        try:
+            with (
+                patch(
+                    "ai_asst_mgr.database.sync.get_last_synced_timestamp",
+                    return_value=2000,  # Last sync is newer than all entries
+                ),
+                patch("ai_asst_mgr.database.sync.save_last_synced_timestamp") as mock_save,
+            ):
+                result = sync_history_to_db(mock_db, temp_path, full_sync=False)
+                # No entries should be imported
+                assert result.sessions_imported == 0
+                assert result.messages_imported == 0
+                assert result.sessions_skipped == 0
+                # Should not save sync state when no new entries
+                mock_save.assert_not_called()
+        finally:
+            temp_path.unlink()
+
+    def test_sync_handles_import_errors(self) -> None:
+        """Test that sync handles import errors gracefully."""
+        mock_db = MagicMock()
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_cursor.fetchall.return_value = []
+        mock_conn.execute.return_value = mock_cursor
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_db._connection.return_value = mock_conn
+
+        # Make record_session raise an exception
+        mock_db.record_session.side_effect = Exception("Database error")
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+            entry = {
+                "display": "test",
+                "timestamp": 1700000000000,
+                "project": "/p",
+                "sessionId": "error-session",
+                "pastedContents": {},
+            }
+            f.write(json.dumps(entry) + "\n")
+            temp_path = Path(f.name)
+
+        try:
+            with (
+                patch(
+                    "ai_asst_mgr.database.sync.get_last_synced_timestamp",
+                    return_value=0,
+                ),
+                patch("ai_asst_mgr.database.sync.save_last_synced_timestamp"),
+            ):
+                result = sync_history_to_db(mock_db, temp_path, full_sync=True)
+                # Session should not be imported due to error
+                assert result.sessions_imported == 0
+                assert len(result.errors) == 1
+                assert "Failed to import session error-session" in result.errors[0]
+        finally:
+            temp_path.unlink()
+
+
+class TestImportSession:
+    """Tests for _import_session function."""
+
+    def test_import_session_with_empty_entries(self) -> None:
+        """Test that _import_session returns early when given empty entries list."""
+        mock_db = MagicMock()
+
+        # Call with empty list should return early without any DB operations
+        _import_session(mock_db, "session-123", [])
+
+        # Verify no database operations were performed
+        mock_db.record_session.assert_not_called()
+        mock_db.record_event.assert_not_called()
+        mock_db._connection.assert_not_called()
+
 
 class TestGetSyncStatus:
     """Tests for get_sync_status function."""
@@ -494,6 +579,39 @@ class TestGetSyncStatus:
 
             assert status["last_synced_timestamp"] == 0
             assert status["last_synced_datetime"] is None
+
+    def test_get_sync_status_counts_history_file_entries(self) -> None:
+        """Test sync status counts entries in existing history file."""
+        mock_db = MagicMock()
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.side_effect = [(5,), (25,)]
+        mock_conn.execute.return_value = mock_cursor
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_db._connection.return_value = mock_conn
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+            # Write 3 lines
+            f.write('{"test": 1}\n')
+            f.write('{"test": 2}\n')
+            f.write('{"test": 3}\n')
+            temp_path = Path(f.name)
+
+        try:
+            with (
+                patch(
+                    "ai_asst_mgr.database.sync.get_last_synced_timestamp",
+                    return_value=1700000000000,
+                ),
+                patch("ai_asst_mgr.database.sync.DEFAULT_HISTORY_PATH", temp_path),
+            ):
+                status = get_sync_status(mock_db)
+
+                assert status["history_file_entries"] == 3
+                assert status["history_file_path"] == str(temp_path)
+        finally:
+            temp_path.unlink()
 
 
 class TestDefaultPaths:
