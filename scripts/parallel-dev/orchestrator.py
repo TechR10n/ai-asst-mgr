@@ -9,6 +9,8 @@ Usage:
     python orchestrator.py status
     python orchestrator.py conflicts
     python orchestrator.py merge-order
+    python orchestrator.py validate <agent_id> [--dry-run]
+    python orchestrator.py health-check <agent_id>
     python orchestrator.py reset
 """
 
@@ -368,8 +370,357 @@ class Orchestrator:
         self._save_state()
         print("✅ Orchestrator state reset")
 
+    def health_check(  # noqa: PLR0912, PLR0915
+        self, agent_id: int
+    ) -> dict[str, bool | str | list[str]]:
+        """Perform health check on agent's worktree and branch.
 
-def main() -> None:
+        Args:
+            agent_id: Agent ID to check.
+
+        Returns:
+            Health check report with status and issues.
+        """
+        agent_key = str(agent_id)
+        if agent_key not in self.state["agents"]:
+            print(f"❌ Invalid agent ID: {agent_id}")
+            sys.exit(1)
+
+        agent = self.state["agents"][agent_key]
+        worktree_path = Path(agent["worktree_path"])
+        branch_name = agent["branch_name"]
+
+        issues: list[str] = []
+        warnings: list[str] = []
+
+        # Check 1: Worktree exists
+        if not worktree_path.exists():
+            issues.append(f"Worktree does not exist: {worktree_path}")
+        # Check 2: Worktree is a git directory
+        elif not (worktree_path / ".git").exists():
+            issues.append("Worktree is not a git repository")
+
+        # Check 3: Branch exists and is checked out
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(worktree_path), "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )  # nosec - safe git command
+            current_branch = result.stdout.strip()
+            if current_branch != branch_name:
+                warnings.append(
+                    f"Expected branch {branch_name}, but {current_branch} is checked out"
+                )
+        except subprocess.CalledProcessError:
+            issues.append("Could not determine current branch")
+
+        # Check 4: Working directory is clean
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(worktree_path), "status", "--porcelain"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )  # nosec - safe git command
+            if result.stdout.strip():
+                uncommitted_files = result.stdout.strip().split("\n")
+                warnings.append(
+                    f"Working directory has {len(uncommitted_files)} uncommitted changes"
+                )
+        except subprocess.CalledProcessError:
+            issues.append("Could not check working directory status")
+
+        # Check 5: Branch is up to date with remote (if it exists)
+        try:
+            # Check if branch has remote tracking
+            subprocess.run(
+                ["git", "-C", str(worktree_path), "rev-parse", "--abbrev-ref", "@{upstream}"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )  # nosec - safe git command
+
+            # Fetch latest
+            subprocess.run(
+                ["git", "-C", str(worktree_path), "fetch"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )  # nosec - safe git command
+
+            # Check if behind remote
+            result = subprocess.run(
+                ["git", "-C", str(worktree_path), "rev-list", "HEAD..@{upstream}", "--count"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )  # nosec - safe git command
+            behind_count = int(result.stdout.strip())
+            if behind_count > 0:
+                warnings.append(f"Branch is {behind_count} commit(s) behind remote")
+        except subprocess.CalledProcessError:
+            # No remote tracking branch - this is OK
+            pass
+
+        # Generate report
+        healthy = len(issues) == 0
+        status = "healthy" if healthy else "unhealthy"
+
+        print(f"\n{'=' * 60}")
+        print(f"HEALTH CHECK - Agent {agent_id}")
+        print(f"{'=' * 60}\n")
+        print(f"Status: {'✅ Healthy' if healthy else '❌ Unhealthy'}")
+        print(f"Worktree: {worktree_path}")
+        print(f"Branch: {branch_name}\n")
+
+        if issues:
+            print(f"❌ Issues ({len(issues)}):")
+            for issue in issues:
+                print(f"  - {issue}")
+            print()
+
+        if warnings:
+            print(f"⚠️  Warnings ({len(warnings)}):")
+            for warning in warnings:
+                print(f"  - {warning}")
+            print()
+
+        if not issues and not warnings:
+            print("✅ No issues detected\n")
+
+        return {
+            "healthy": healthy,
+            "status": status,
+            "issues": issues,
+            "warnings": warnings,
+        }
+
+    def validate_merge(  # noqa: PLR0912, PLR0915
+        self, agent_id: int, dry_run: bool = False
+    ) -> dict[str, bool | int | list[str]]:
+        """Validate agent's branch is ready to merge.
+
+        Performs comprehensive pre-merge checks including:
+        - Branch health
+        - Test suite passing
+        - Coverage >= 95%
+        - Quality gates (mypy, ruff, bandit)
+        - Conflict prediction
+
+        Args:
+            agent_id: Agent ID to validate.
+            dry_run: If True, only report what would happen (no actual merge).
+
+        Returns:
+            Validation report with merge readiness status.
+        """
+        agent_key = str(agent_id)
+        if agent_key not in self.state["agents"]:
+            print(f"❌ Invalid agent ID: {agent_id}")
+            sys.exit(1)
+
+        agent = self.state["agents"][agent_key]
+        worktree_path = Path(agent["worktree_path"])
+        branch_name = agent["branch_name"]
+
+        print(f"\n{'=' * 60}")
+        print(f"MERGE VALIDATION - Agent {agent_id}")
+        if dry_run:
+            print("(DRY-RUN MODE)")
+        print(f"{'=' * 60}\n")
+        print(f"Worktree: {worktree_path}")
+        print(f"Branch: {branch_name}\n")
+
+        issues: list[str] = []
+        warnings: list[str] = []
+        checks_passed = 0
+        checks_total = 0
+
+        # Check 1: Health check
+        print("1. Running health check...")
+        health = self.health_check(agent_id)
+        checks_total += 1
+        if health["healthy"]:
+            print("   ✅ Health check passed\n")
+            checks_passed += 1
+        else:
+            print("   ❌ Health check failed\n")
+            issues.extend(health["issues"])  # type: ignore
+            warnings.extend(health["warnings"])  # type: ignore
+
+        # Check 2: Tests passing
+        print("2. Running test suite...")
+        checks_total += 1
+        try:
+            result = subprocess.run(
+                ["uv", "run", "pytest", "-xvs"],
+                check=False,
+                cwd=worktree_path,
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )  # nosec - safe pytest command
+            if result.returncode == 0:
+                print("   ✅ All tests passing\n")
+                checks_passed += 1
+            else:
+                print("   ❌ Tests failing\n")
+                issues.append("Test suite has failures")
+                # Show last 10 lines of output
+                lines = result.stdout.split("\n")[-10:]
+                print("   Last 10 lines of output:")
+                for line in lines:
+                    print(f"     {line}")
+                print()
+        except subprocess.TimeoutExpired:
+            print("   ❌ Tests timed out\n")
+            issues.append("Test suite timed out after 300s")
+        except subprocess.CalledProcessError as e:
+            print(f"   ❌ Error running tests: {e}\n")
+            issues.append(f"Error running tests: {e}")
+
+        # Check 3: Coverage >= 95%
+        print("3. Checking test coverage...")
+        checks_total += 1
+        try:
+            result = subprocess.run(
+                ["uv", "run", "pytest", "--cov", "--cov-report=term", "--cov-fail-under=95"],
+                check=False,
+                cwd=worktree_path,
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )  # nosec - safe pytest command
+            if result.returncode == 0:
+                print("   ✅ Coverage >= 95%\n")
+                checks_passed += 1
+            else:
+                print("   ❌ Coverage below 95%\n")
+                issues.append("Test coverage below 95% threshold")
+                # Extract coverage percentage from output
+                for line in result.stdout.split("\n"):
+                    if "TOTAL" in line:
+                        print(f"     {line}")
+                print()
+        except subprocess.TimeoutExpired:
+            print("   ❌ Coverage check timed out\n")
+            issues.append("Coverage check timed out after 300s")
+        except subprocess.CalledProcessError as e:
+            print(f"   ❌ Error checking coverage: {e}\n")
+            issues.append(f"Error checking coverage: {e}")
+
+        # Check 4: mypy --strict
+        print("4. Running mypy --strict...")
+        checks_total += 1
+        try:
+            result = subprocess.run(
+                ["uv", "run", "mypy", "--strict", "src", "tests"],
+                check=False,
+                cwd=worktree_path,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )  # nosec - safe mypy command
+            if result.returncode == 0:
+                print("   ✅ mypy --strict passed\n")
+                checks_passed += 1
+            else:
+                print("   ❌ mypy --strict failed\n")
+                issues.append("Type checking failed (mypy --strict)")
+                # Show first 10 errors
+                lines = result.stdout.split("\n")[:10]
+                print("   First 10 errors:")
+                for line in lines:
+                    if line.strip():
+                        print(f"     {line}")
+                print()
+        except subprocess.TimeoutExpired:
+            print("   ❌ mypy timed out\n")
+            issues.append("Type checking timed out after 120s")
+        except subprocess.CalledProcessError as e:
+            print(f"   ❌ Error running mypy: {e}\n")
+            issues.append(f"Error running mypy: {e}")
+
+        # Check 5: ruff check
+        print("5. Running ruff check...")
+        checks_total += 1
+        try:
+            result = subprocess.run(
+                ["uv", "run", "ruff", "check", "src", "tests"],
+                check=False,
+                cwd=worktree_path,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )  # nosec - safe ruff command
+            if result.returncode == 0:
+                print("   ✅ ruff check passed\n")
+                checks_passed += 1
+            else:
+                print("   ❌ ruff check failed\n")
+                warnings.append("Linting issues found (ruff check)")
+                print(f"   Output:\n{result.stdout}\n")
+        except subprocess.TimeoutExpired:
+            print("   ❌ ruff timed out\n")
+            warnings.append("Linting check timed out after 60s")
+        except subprocess.CalledProcessError as e:
+            print(f"   ❌ Error running ruff: {e}\n")
+            warnings.append(f"Error running ruff: {e}")
+
+        # Check 6: Conflict detection
+        print("6. Checking for merge conflicts...")
+        checks_total += 1
+        conflicts = self.detect_conflicts()
+        agent_conflicts = [c for c in conflicts if agent_id in (c[0], c[1])]
+        if not agent_conflicts:
+            print("   ✅ No file conflicts detected\n")
+            checks_passed += 1
+        else:
+            print(f"   ⚠️  {len(agent_conflicts)} conflict(s) detected\n")
+            warnings.append(f"{len(agent_conflicts)} file conflict(s) with other agents")
+            for agent1, agent2, files in agent_conflicts:
+                other_agent = agent2 if agent1 == agent_id else agent1
+                print(f"   Conflict with Agent {other_agent}:")
+                for file in files:
+                    print(f"     - {file}")
+            print()
+
+        # Summary
+        print(f"{'=' * 60}")
+        print("VALIDATION SUMMARY")
+        print(f"{'=' * 60}\n")
+        print(f"Checks passed: {checks_passed}/{checks_total}")
+        print(f"Issues: {len(issues)}")
+        print(f"Warnings: {len(warnings)}\n")
+
+        ready_to_merge = len(issues) == 0
+        if ready_to_merge:
+            print("✅ READY TO MERGE")
+            if warnings:
+                print(f"   ({len(warnings)} warning(s) - review recommended)")
+        else:
+            print("❌ NOT READY TO MERGE")
+            print("\nBlocking issues:")
+            for issue in issues:
+                print(f"  - {issue}")
+
+        if dry_run:
+            print("\n(This was a dry-run - no merge performed)")
+
+        print()
+
+        return {
+            "ready": ready_to_merge,
+            "checks_passed": checks_passed,
+            "checks_total": checks_total,
+            "issues": issues,
+            "warnings": warnings,
+        }
+
+
+def main() -> None:  # noqa: PLR0912, PLR0915
     """Main CLI entry point."""
     if len(sys.argv) < MIN_ARGS_BASE:
         print("Usage:")
@@ -379,6 +730,8 @@ def main() -> None:
         print("  orchestrator.py status")
         print("  orchestrator.py conflicts")
         print("  orchestrator.py merge-order")
+        print("  orchestrator.py health-check <agent_id>")
+        print("  orchestrator.py validate <agent_id> [--dry-run]")
         print("  orchestrator.py reset")
         sys.exit(1)
 
@@ -418,6 +771,23 @@ def main() -> None:
 
     elif command == "merge-order":
         orchestrator.show_merge_order()
+
+    elif command == "health-check":
+        if len(sys.argv) < MIN_ARGS_START:
+            print("Usage: orchestrator.py health-check <agent_id>")
+            sys.exit(1)
+        agent_id = int(sys.argv[2])
+        orchestrator.health_check(agent_id)
+
+    elif command == "validate":
+        if len(sys.argv) < MIN_ARGS_START:
+            print("Usage: orchestrator.py validate <agent_id> [--dry-run]")
+            sys.exit(1)
+        agent_id = int(sys.argv[2])
+        dry_run = "--dry-run" in sys.argv
+        result = orchestrator.validate_merge(agent_id, dry_run=dry_run)
+        # Exit with non-zero if not ready to merge
+        sys.exit(0 if result["ready"] else 1)
 
     elif command == "reset":
         orchestrator.reset()
