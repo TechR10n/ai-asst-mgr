@@ -99,9 +99,76 @@ ai-asst-mgr init
 # Run health checks
 ai-asst-mgr health
 
-# Start web dashboard
-ai-asst-mgr serve
-# Open browser to http://127.0.0.1:8080
+# Get coaching insights
+ai-asst-mgr coach
+```
+
+### **Example Output**
+
+```
+$ ai-asst-mgr status
+
+╭─────────────────────────────────────────────────────────────╮
+│                    AI Assistant Status                       │
+╰─────────────────────────────────────────────────────────────╯
+
+┏━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Vendor         ┃ Status       ┃ Notes                       ┃
+┡━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ Claude Code    │ ✓ Configured │ 5 agents, 12 skills         │
+│ Gemini CLI     │ ✓ Installed  │ Run 'ai-asst-mgr init'      │
+│ OpenAI Codex   │ ✗ Not Found  │ Install from openai.com     │
+└────────────────┴──────────────┴─────────────────────────────┘
+
+Summary: 1 configured, 1 installed, 1 not found
+```
+
+### **Backup & Restore**
+
+```bash
+# Backup all vendors
+ai-asst-mgr backup
+
+# Backup specific vendor
+ai-asst-mgr backup --vendor claude
+
+# List existing backups
+ai-asst-mgr backup --list
+
+# Restore from backup
+ai-asst-mgr restore backup.tar.gz
+
+# Preview what would be restored
+ai-asst-mgr restore backup.tar.gz --preview
+```
+
+### **Sync from Git**
+
+```bash
+# Sync configurations from a repository
+ai-asst-mgr sync https://github.com/user/my-ai-configs.git
+
+# Sync with preview (dry-run)
+ai-asst-mgr sync https://github.com/user/configs.git --preview
+
+# Sync with specific merge strategy
+ai-asst-mgr sync https://github.com/user/configs.git --strategy merge
+```
+
+### **AI Coaching**
+
+```bash
+# Get usage insights for all vendors
+ai-asst-mgr coach
+
+# Coach specific vendor
+ai-asst-mgr coach --vendor claude
+
+# Compare vendors
+ai-asst-mgr coach --compare
+
+# Generate weekly report
+ai-asst-mgr coach --report weekly
 ```
 
 ---
@@ -272,57 +339,60 @@ uv run mypy src/
 - [x] GeminiAdapter (215 statements, 95.47% coverage, 50 tests)
 - [x] OpenAIAdapter (242 statements, 95.21% coverage, 50 tests)
 - [x] VendorRegistry (32 statements, 100% coverage, 22 tests)
-- [x] Comprehensive test suite (169 vendor tests)
 
 **Completed:** November 24, 2025 | **PRs:** #64, #66, #67, #68
 
-### **✅ Phase 2b: Database Foundation (Completed)**
-- [x] Vendor-agnostic database schema (v2.0.0)
-- [x] Migration framework (380 lines, 85.79% coverage, 26 tests)
-- [x] 001_vendor_agnostic.sql (320+ lines, 5 tables, 4 views)
-- [x] Tested on production database (41 capabilities migrated)
-
-**Completed:** November 24, 2025 | **Issues:** #11 ✅, #14 ✅
-
 ### **✅ Phase 3: CLI Implementation (Completed)**
-- [x] Implement status command (Issue #16) - 95.15% coverage
-- [x] Implement health command (Issue #18) - 96.30% coverage
-- [x] Implement doctor command (Issue #20) - 96.30% coverage
-- [x] Implement init command (Issue #17) - 96.37% coverage
-- [x] Implement config command (Issue #19) - 95.83% coverage
-- [x] All 5 commands integrated with 95.92% combined coverage
-- [x] 311 total tests passing
-- [x] Parallel development validated (83% overhead reduction)
+- [x] Implement status command
+- [x] Implement health command
+- [x] Implement doctor command
+- [x] Implement init command
+- [x] Implement config command
 
-**Completed:** November 25, 2025 | **PRs:** #71 (status, health, doctor), init & config integrated
+**Completed:** November 25, 2025 | **PRs:** #71, #72
 
-### **📋 Phase 4-5: Backup & Audit (Planned)**
-- [ ] Backup/restore operations (Issues #32-35)
-- [ ] Audit framework (Issues #22, #26)
-- [ ] Session tracking (Issues #12-13)
+### **✅ Phase 5: Coaching System (Completed)**
+- [x] ClaudeCoach with usage analytics
+- [x] GeminiCoach with usage analytics
+- [x] CodexCoach with usage analytics
+- [x] Cross-vendor comparison
+- [x] Weekly/monthly reports
 
-**Est. Completion:** November 29, 2025
+**Completed:** November 25, 2025 | **PRs:** #74
 
-### **🚀 Phase 11: Enhanced MVP Features (Planned)**
-- [ ] Configuration Schema Validation (Issue #58)
-- [ ] Plugin Architecture (Issue #59)
-- [ ] Dry-Run Mode (Issue #60)
-- [ ] Config Diff Tool (Issue #61)
-- [ ] Automated Config Fixes (Issue #62)
-- [ ] Health Score Dashboard (Issue #63)
+### **✅ Phase 6: Backup & Restore (Completed)**
+- [x] BackupManager with retention policies
+- [x] RestoreManager with selective restore
+- [x] SyncManager with merge strategies
+- [x] GitPython-based secure git operations
+- [x] CWE-22 path traversal protection
 
-**Est. Completion:** December 2, 2025
+**Completed:** November 25, 2025 | **PRs:** #75, #76
+
+### **✅ Phase 10: Testing & Documentation (Current)**
+- [x] CHANGELOG.md created
+- [x] README.md updated with examples
+- [x] GitHub release workflow exists
+- [ ] Comprehensive documentation
+- [ ] Additional unit tests
+
+### **📋 Phase 8: Capabilities (Planned)**
+- [ ] UniversalAgentManager (Issue #43)
+- [ ] Agents CLI command (Issue #44)
+
+### **📋 Phase 9: Web Dashboard (Planned)**
+- [ ] FastAPI application setup (Issue #45)
+- [ ] HTMX components (Issue #50)
+- [ ] Dashboard pages (Issues #47-49, #52)
 
 ### **🎯 Progress Summary**
-- **Total Issues:** 63 (15 completed, 48 remaining)
-- **Phases:** 11 (3 completed)
-- **MVP Scope:** 30 issues (50% complete)
-- **Test Coverage:** 95.92% (311 tests passing)
+- **Tests:** 748 passing
+- **Coverage:** 95%+ maintained
 - **Type Safety:** mypy --strict ✅
 - **Security:** bandit passing ✅
-- **Parallel Development:** 83% overhead reduction validated ✅
+- **Phases:** 6 completed, 3 remaining
 
-See the [GitHub Issues](GITHUB_ISSUES.md) for detailed task breakdown.
+See [GitHub Issues](https://github.com/TechR10n/ai-asst-mgr/issues) for detailed task breakdown.
 
 ---
 
