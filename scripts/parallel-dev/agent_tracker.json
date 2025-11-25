@@ -1,0 +1,64 @@
+{
+  "agents": {
+    "1": {
+      "agent_id": 1,
+      "worktree_path": "/Users/ryan.hammang/Developer/ai-asst-mgr-worktrees/agent-1",
+      "branch_name": "parallel-dev/agent-1",
+      "current_task": null,
+      "completed_tasks": [
+        {
+          "issue_number": 17,
+          "title": "Implement init command",
+          "estimated_hours": 2.0,
+          "status": "merged",
+          "assigned_at": "2025-11-25T00:43:14.667132+00:00",
+          "started_at": null,
+          "completed_at": "2025-11-25T00:52:22.957077+00:00",
+          "merged_at": "2025-11-25T01:04:59.000000+00:00",
+          "files_modified": [
+            "src/ai_asst_mgr/cli.py",
+            "tests/unit/test_cli.py"
+          ]
+        }
+      ],
+      "total_hours": 2.0
+    },
+    "2": {
+      "agent_id": 2,
+      "worktree_path": "/Users/ryan.hammang/Developer/ai-asst-mgr-worktrees/agent-2",
+      "branch_name": "parallel-dev/agent-2",
+      "current_task": null,
+      "completed_tasks": [
+        {
+          "issue_number": 19,
+          "title": "Implement config command",
+          "estimated_hours": 2.0,
+          "status": "merged",
+          "assigned_at": "2025-11-25T00:43:14.770319+00:00",
+          "started_at": null,
+          "completed_at": "2025-11-25T00:52:23.037672+00:00",
+          "merged_at": "2025-11-25T01:04:59.000000+00:00",
+          "files_modified": [
+            "src/ai_asst_mgr/cli.py",
+            "tests/unit/test_cli.py"
+          ]
+        }
+      ],
+      "total_hours": 2.0
+    },
+    "3": {
+      "agent_id": 3,
+      "worktree_path": "/Users/ryan.hammang/Developer/ai-asst-mgr-worktrees/agent-3",
+      "branch_name": "parallel-dev/agent-3",
+      "current_task": null,
+      "completed_tasks": [],
+      "total_hours": 0.0
+    }
+  },
+  "last_updated": "2025-11-25T00:52:23.194972+00:00",
+  "merge_order": [
+    3,
+    1,
+    2
+  ]
+}
