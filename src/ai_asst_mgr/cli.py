@@ -5,11 +5,12 @@ This module provides the main CLI entry point using Typer for command execution.
 
 from __future__ import annotations
 
+import json
 import platform
 import shutil
 import sys
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 from rich.console import Console
@@ -17,7 +18,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from ai_asst_mgr.adapters.base import VendorStatus
+from ai_asst_mgr.adapters.base import VendorAdapter, VendorStatus
 from ai_asst_mgr.vendors import VendorRegistry
 
 app = typer.Typer(
@@ -194,6 +195,68 @@ def init(
         console.print(f"[green]Initializing {vendor}...[/green]")
     else:
         console.print("[green]Initializing all vendors...[/green]")
+
+
+@app.command()
+def config(
+    key: Annotated[
+        str | None,
+        typer.Argument(help="Configuration key to get or set"),
+    ] = None,
+    value: Annotated[
+        str | None,
+        typer.Argument(help="Value to set for the configuration key"),
+    ] = None,
+    vendor: Annotated[
+        str | None,
+        typer.Option("--vendor", "-v", help="Vendor to configure"),
+    ] = None,
+    list_all: Annotated[
+        bool,
+        typer.Option("--list", "-l", help="List all configuration values"),
+    ] = False,
+) -> None:
+    """Get or set configuration values for AI assistant vendors.
+
+    Examples:
+        ai-asst-mgr config --list                         # List all config
+        ai-asst-mgr config --vendor claude --list         # List Claude config
+        ai-asst-mgr config theme                          # Get value for 'theme'
+        ai-asst-mgr config theme "light"                  # Set theme to "light"
+        ai-asst-mgr config --vendor claude version        # Get Claude version
+        ai-asst-mgr config mcp.servers.brave.url "https://..." # Set nested value
+    """
+    registry = VendorRegistry()
+
+    # Determine which vendors to operate on
+    if vendor:
+        try:
+            vendors_to_use = {vendor: registry.get_vendor(vendor)}
+        except KeyError:
+            console.print(f"[red]Error: Unknown vendor '{vendor}'[/red]")
+            available = ", ".join(registry.get_all_vendors().keys())
+            console.print(f"[yellow]Available vendors: {available}[/yellow]")
+            raise typer.Exit(code=1) from None
+    else:
+        vendors_to_use = registry.get_all_vendors()
+
+    # Handle --list flag
+    if list_all:
+        _config_list_all(vendors_to_use)
+        return
+
+    # Handle get/set operations
+    if key is None:
+        console.print("[red]Error: Please provide a configuration key or use --list[/red]")
+        console.print("[yellow]Usage: ai-asst-mgr config KEY [VALUE][/yellow]")
+        raise typer.Exit(code=1)
+
+    # If value is provided, set the config
+    if value is not None:
+        _config_set_value(vendors_to_use, key, value, vendor)
+    else:
+        # Get the config value
+        _config_get_value(vendors_to_use, key, vendor)
 
 
 @app.command()
@@ -750,6 +813,173 @@ def _attempt_fixes(issues: list[dict[str, str]]) -> int:
         # For safety, we don't auto-fix permission issues
 
     return fixed
+
+
+# config command helpers
+def _config_list_all(vendors: dict[str, VendorAdapter]) -> None:
+    """List all configuration values for vendors.
+
+    Args:
+        vendors: Dictionary of vendor name to adapter mappings.
+    """
+    for vendor_name, adapter in vendors.items():
+        try:
+            # Check if vendor is configured
+            if not adapter.is_configured():
+                console.print(f"\n[yellow]{vendor_name.capitalize()}: Not configured[/yellow]")
+                continue
+
+            # Load the full settings
+            if hasattr(adapter, "_load_settings"):
+                settings = adapter._load_settings()
+            else:
+                console.print(
+                    f"\n[yellow]{vendor_name.capitalize()}: Unable to load settings[/yellow]"
+                )
+                continue
+
+            # Display vendor config table
+            console.print(f"\n[bold cyan]{vendor_name.capitalize()} Configuration:[/bold cyan]")
+            table = Table(show_header=True, header_style="bold magenta")
+            table.add_column("Key", style="cyan", width=30)
+            table.add_column("Value", style="green", width=50)
+
+            # Flatten nested dict for display
+            for config_key, config_value in _flatten_dict(settings).items():
+                value_str = _format_config_value(config_value)
+                table.add_row(config_key, value_str)
+
+            console.print(table)
+
+        except Exception as e:
+            console.print(f"\n[red]Error listing config for {vendor_name}: {e}[/red]")
+
+
+def _config_get_value(vendors: dict[str, VendorAdapter], key: str, vendor_name: str | None) -> None:
+    """Get a configuration value.
+
+    Args:
+        vendors: Dictionary of vendor name to adapter mappings.
+        key: Configuration key to retrieve.
+        vendor_name: Optional vendor name (if specified, only get from that vendor).
+    """
+    found = False
+
+    for name, adapter in vendors.items():
+        try:
+            value = adapter.get_config(key)
+            found = True
+
+            # If specific vendor was requested, just show the value
+            if vendor_name:
+                console.print(_format_config_value(value))
+            else:
+                # Show vendor name with the value
+                console.print(f"[cyan]{name.capitalize()}:[/cyan] {_format_config_value(value)}")
+
+        except KeyError:
+            if vendor_name:
+                # If specific vendor was requested and key not found, show error
+                console.print(f"[red]Configuration key '{key}' not found in {name}[/red]")
+                raise typer.Exit(code=1) from None
+            # If querying all vendors, skip those that don't have the key
+            continue
+        except Exception as e:
+            console.print(f"[red]Error reading config from {name}: {e}[/red]")
+            if vendor_name:
+                raise typer.Exit(code=1) from e
+
+    if not found and not vendor_name:
+        console.print(f"[red]Configuration key '{key}' not found in any vendor[/red]")
+        raise typer.Exit(code=1)
+
+
+def _config_set_value(
+    vendors: dict[str, VendorAdapter],
+    key: str,
+    value: str,
+    vendor_name: str | None,  # noqa: ARG001
+) -> None:
+    """Set a configuration value.
+
+    Args:
+        vendors: Dictionary of vendor name to adapter mappings.
+        key: Configuration key to set.
+        value: Value to set.
+        vendor_name: Optional vendor name (if specified, only set for that vendor).
+    """
+    # Parse value - try to convert to appropriate type
+    parsed_value = _parse_config_value(value)
+
+    for name, adapter in vendors.items():
+        try:
+            adapter.set_config(key, parsed_value)
+            console.print(
+                f"[green]Set {key} = {_format_config_value(parsed_value)} for {name}[/green]"
+            )
+
+        except ValueError as e:
+            console.print(f"[red]Invalid value for {name}: {e}[/red]")
+            raise typer.Exit(code=1) from e
+        except Exception as e:
+            console.print(f"[red]Error setting config for {name}: {e}[/red]")
+            raise typer.Exit(code=1) from e
+
+
+def _flatten_dict(d: dict[str, Any], parent_key: str = "", sep: str = ".") -> dict[str, Any]:
+    """Flatten a nested dictionary using dot notation.
+
+    Args:
+        d: Dictionary to flatten.
+        parent_key: Parent key prefix.
+        sep: Separator for nested keys.
+
+    Returns:
+        Flattened dictionary with dot-notation keys.
+    """
+    items: list[tuple[str, Any]] = []
+    for k, v in d.items():
+        new_key = f"{parent_key}{sep}{k}" if parent_key else k
+        if isinstance(v, dict):
+            items.extend(_flatten_dict(v, new_key, sep=sep).items())
+        else:
+            items.append((new_key, v))
+    return dict(items)
+
+
+def _format_config_value(value: object) -> str:
+    """Format a configuration value for display.
+
+    Args:
+        value: Value to format.
+
+    Returns:
+        Formatted string representation.
+    """
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, indent=2)
+    if isinstance(value, bool):
+        return "[green]true[/green]" if value else "[red]false[/red]"
+    if value is None:
+        return "[dim]null[/dim]"
+    return str(value)
+
+
+def _parse_config_value(value: str) -> object:
+    """Parse a string value to appropriate type.
+
+    Args:
+        value: String value to parse.
+
+    Returns:
+        Parsed value (bool, int, float, dict, list, or str).
+    """
+    # Try to parse as JSON first (handles objects, arrays, booleans, numbers)
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        # Return as string if not valid JSON
+        return value
 
 
 def main() -> None:

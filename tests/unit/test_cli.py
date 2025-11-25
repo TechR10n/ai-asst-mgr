@@ -15,10 +15,13 @@ from ai_asst_mgr.cli import (
     _attempt_fixes,
     _check_read_permission,
     _check_write_permission,
+    _flatten_dict,
+    _format_config_value,
     _get_notes_for_status,
     _get_status_display,
     _has_read_access,
     _has_write_access,
+    _parse_config_value,
     app,
 )
 
@@ -962,3 +965,534 @@ class TestDoctorHelperFunctions:
         result = _attempt_fixes(issues)
         # No auto-fix for unrecognized patterns
         assert result == 0
+
+
+class TestConfigCommand:
+    """All config command tests - Agent 2."""
+
+    def test_config_list_all(self) -> None:
+        """Test config --list shows all vendor configurations."""
+        with patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class:
+            # Create mock adapter with config
+            mock_adapter = MagicMock()
+            mock_adapter.is_configured.return_value = True
+            mock_adapter._load_settings.return_value = {
+                "version": "1.0.0",
+                "theme": "dark",
+                "autoSave": True,
+            }
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {"claude": mock_adapter}
+            mock_registry_class.return_value = mock_registry
+
+            result = runner.invoke(app, ["config", "--list"])
+
+            assert result.exit_code == 0
+            assert "Claude Configuration:" in result.stdout
+            assert "version" in result.stdout
+            assert "1.0.0" in result.stdout
+            assert "theme" in result.stdout
+            assert "dark" in result.stdout
+
+    def test_config_list_specific_vendor(self) -> None:
+        """Test config --vendor claude --list shows only Claude config."""
+        with patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class:
+            # Create mock adapter with config
+            mock_adapter = MagicMock()
+            mock_adapter.is_configured.return_value = True
+            mock_adapter._load_settings.return_value = {
+                "version": "1.0.0",
+                "theme": "dark",
+            }
+
+            mock_registry = MagicMock()
+            mock_registry.get_vendor.return_value = mock_adapter
+            mock_registry_class.return_value = mock_registry
+
+            result = runner.invoke(app, ["config", "--vendor", "claude", "--list"])
+
+            assert result.exit_code == 0
+            assert "Claude Configuration:" in result.stdout
+            assert "version" in result.stdout
+            mock_registry.get_vendor.assert_called_once_with("claude")
+
+    def test_config_list_unconfigured_vendor(self) -> None:
+        """Test config --list with unconfigured vendor."""
+        with patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class:
+            # Create mock adapter that is not configured
+            mock_adapter = MagicMock()
+            mock_adapter.is_configured.return_value = False
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {"gemini": mock_adapter}
+            mock_registry_class.return_value = mock_registry
+
+            result = runner.invoke(app, ["config", "--list"])
+
+            assert result.exit_code == 0
+            assert "Gemini: Not configured" in result.stdout
+
+    def test_config_get_value(self) -> None:
+        """Test config KEY gets configuration value."""
+        with patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class:
+            # Create mock adapter
+            mock_adapter = MagicMock()
+            mock_adapter.get_config.return_value = "dark"
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {"claude": mock_adapter}
+            mock_registry_class.return_value = mock_registry
+
+            result = runner.invoke(app, ["config", "theme"])
+
+            assert result.exit_code == 0
+            assert "dark" in result.stdout
+            mock_adapter.get_config.assert_called_once_with("theme")
+
+    def test_config_get_nested_key(self) -> None:
+        """Test config with nested key (e.g., mcp.servers.brave.url)."""
+        with patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class:
+            # Create mock adapter
+            mock_adapter = MagicMock()
+            mock_adapter.get_config.return_value = "https://brave.com"
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {"claude": mock_adapter}
+            mock_registry_class.return_value = mock_registry
+
+            result = runner.invoke(app, ["config", "mcp.servers.brave.url"])
+
+            assert result.exit_code == 0
+            assert "https://brave.com" in result.stdout
+            mock_adapter.get_config.assert_called_once_with("mcp.servers.brave.url")
+
+    def test_config_get_value_specific_vendor(self) -> None:
+        """Test config --vendor claude KEY gets value from specific vendor."""
+        with patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class:
+            # Create mock adapter
+            mock_adapter = MagicMock()
+            mock_adapter.get_config.return_value = "1.0.0"
+
+            mock_registry = MagicMock()
+            mock_registry.get_vendor.return_value = mock_adapter
+            mock_registry_class.return_value = mock_registry
+
+            result = runner.invoke(app, ["config", "--vendor", "claude", "version"])
+
+            assert result.exit_code == 0
+            assert "1.0.0" in result.stdout
+            mock_adapter.get_config.assert_called_once_with("version")
+            mock_registry.get_vendor.assert_called_once_with("claude")
+
+    def test_config_set_value(self) -> None:
+        """Test config KEY VALUE sets configuration value."""
+        with patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class:
+            # Create mock adapter
+            mock_adapter = MagicMock()
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {"claude": mock_adapter}
+            mock_registry_class.return_value = mock_registry
+
+            result = runner.invoke(app, ["config", "theme", "light"])
+
+            assert result.exit_code == 0
+            assert "Set theme = light for claude" in result.stdout
+            mock_adapter.set_config.assert_called_once_with("theme", "light")
+
+    def test_config_set_nested_key(self) -> None:
+        """Test config with nested key setting (dot notation)."""
+        with patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class:
+            # Create mock adapter
+            mock_adapter = MagicMock()
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {"claude": mock_adapter}
+            mock_registry_class.return_value = mock_registry
+
+            result = runner.invoke(app, ["config", "mcp.servers.brave.url", "https://brave.com"])
+
+            assert result.exit_code == 0
+            assert "Set mcp.servers.brave.url" in result.stdout
+            mock_adapter.set_config.assert_called_once_with(
+                "mcp.servers.brave.url", "https://brave.com"
+            )
+
+    def test_config_set_boolean_value(self) -> None:
+        """Test config sets boolean values correctly."""
+        with patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class:
+            # Create mock adapter
+            mock_adapter = MagicMock()
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {"claude": mock_adapter}
+            mock_registry_class.return_value = mock_registry
+
+            result = runner.invoke(app, ["config", "autoSave", "true"])
+
+            assert result.exit_code == 0
+            # Value should be parsed as boolean True, not string "true"
+            mock_adapter.set_config.assert_called_once_with("autoSave", True)
+
+    def test_config_set_numeric_value(self) -> None:
+        """Test config sets numeric values correctly."""
+        with patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class:
+            # Create mock adapter
+            mock_adapter = MagicMock()
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {"claude": mock_adapter}
+            mock_registry_class.return_value = mock_registry
+
+            result = runner.invoke(app, ["config", "timeout", "30"])
+
+            assert result.exit_code == 0
+            # Value should be parsed as number 30, not string "30"
+            mock_adapter.set_config.assert_called_once_with("timeout", 30)
+
+    def test_config_set_json_object(self) -> None:
+        """Test config sets JSON object values."""
+        with patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class:
+            # Create mock adapter
+            mock_adapter = MagicMock()
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {"claude": mock_adapter}
+            mock_registry_class.return_value = mock_registry
+
+            result = runner.invoke(app, ["config", "server", '{"host":"localhost","port":8080}'])
+
+            assert result.exit_code == 0
+            # Value should be parsed as dict
+            mock_adapter.set_config.assert_called_once_with(
+                "server", {"host": "localhost", "port": 8080}
+            )
+
+    def test_config_set_value_specific_vendor(self) -> None:
+        """Test config --vendor claude KEY VALUE sets for specific vendor only."""
+        with patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class:
+            # Create mock adapter
+            mock_adapter = MagicMock()
+
+            mock_registry = MagicMock()
+            mock_registry.get_vendor.return_value = mock_adapter
+            mock_registry_class.return_value = mock_registry
+
+            result = runner.invoke(app, ["config", "--vendor", "claude", "theme", "light"])
+
+            assert result.exit_code == 0
+            assert "Set theme = light for claude" in result.stdout
+            mock_adapter.set_config.assert_called_once_with("theme", "light")
+            mock_registry.get_vendor.assert_called_once_with("claude")
+
+    def test_config_with_invalid_key(self) -> None:
+        """Test config with invalid/nonexistent key."""
+        with patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class:
+            # Create mock adapter that raises KeyError
+            mock_adapter = MagicMock()
+            mock_adapter.get_config.side_effect = KeyError("Config key not found")
+
+            mock_registry = MagicMock()
+            mock_registry.get_vendor.return_value = mock_adapter
+            mock_registry_class.return_value = mock_registry
+
+            result = runner.invoke(app, ["config", "--vendor", "claude", "nonexistent"])
+
+            assert result.exit_code == 1
+            assert "not found" in result.stdout
+
+    def test_config_with_invalid_vendor(self) -> None:
+        """Test config with invalid vendor name."""
+        with patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class:
+            mock_registry = MagicMock()
+            mock_registry.get_vendor.side_effect = KeyError("Unknown vendor")
+            mock_registry.get_all_vendors.return_value = {
+                "claude": MagicMock(),
+                "gemini": MagicMock(),
+            }
+            mock_registry_class.return_value = mock_registry
+
+            result = runner.invoke(app, ["config", "--vendor", "invalid", "key"])
+
+            assert result.exit_code == 1
+            assert "Unknown vendor 'invalid'" in result.stdout
+            assert "Available vendors:" in result.stdout
+
+    def test_config_without_key_or_list(self) -> None:
+        """Test config command without key and without --list flag."""
+        result = runner.invoke(app, ["config"])
+
+        assert result.exit_code == 1
+        assert "Please provide a configuration key or use --list" in result.stdout
+
+    def test_config_set_with_value_error(self) -> None:
+        """Test config handles ValueError from adapter."""
+        with patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class:
+            # Create mock adapter that raises ValueError
+            mock_adapter = MagicMock()
+            mock_adapter.set_config.side_effect = ValueError("Invalid value for key")
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {"claude": mock_adapter}
+            mock_registry_class.return_value = mock_registry
+
+            result = runner.invoke(app, ["config", "theme", "invalid_theme"])
+
+            assert result.exit_code == 1
+            assert "Invalid value" in result.stdout
+
+    def test_config_get_boolean_value_display(self) -> None:
+        """Test config displays boolean values with colors."""
+        with patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class:
+            # Create mock adapter
+            mock_adapter = MagicMock()
+            mock_adapter.get_config.return_value = True
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {"claude": mock_adapter}
+            mock_registry_class.return_value = mock_registry
+
+            result = runner.invoke(app, ["config", "autoSave"])
+
+            assert result.exit_code == 0
+            assert "true" in result.stdout
+
+    def test_config_get_dict_value_display(self) -> None:
+        """Test config displays dict values as formatted JSON."""
+        with patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class:
+            # Create mock adapter
+            mock_adapter = MagicMock()
+            mock_adapter.get_config.return_value = {"host": "localhost", "port": 8080}
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {"claude": mock_adapter}
+            mock_registry_class.return_value = mock_registry
+
+            result = runner.invoke(app, ["config", "server"])
+
+            assert result.exit_code == 0
+            assert "host" in result.stdout
+            assert "localhost" in result.stdout
+
+    def test_config_list_with_nested_values(self) -> None:
+        """Test config --list displays nested configuration correctly."""
+        with patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class:
+            # Create mock adapter with nested config
+            mock_adapter = MagicMock()
+            mock_adapter.is_configured.return_value = True
+            mock_adapter._load_settings.return_value = {
+                "version": "1.0.0",
+                "mcp": {
+                    "servers": {
+                        "brave": {"url": "https://brave.com"},
+                    }
+                },
+            }
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {"claude": mock_adapter}
+            mock_registry_class.return_value = mock_registry
+
+            result = runner.invoke(app, ["config", "--list"])
+
+            assert result.exit_code == 0
+            assert "Claude Configuration:" in result.stdout
+            assert "version" in result.stdout
+            # Flattened nested key should appear
+            assert "mcp.servers.brave.url" in result.stdout
+
+    def test_config_list_handles_load_error(self) -> None:
+        """Test config --list handles errors gracefully."""
+        with patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class:
+            # Create mock adapter that raises error
+            mock_adapter = MagicMock()
+            mock_adapter.is_configured.return_value = True
+            mock_adapter._load_settings.side_effect = Exception("Failed to load")
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {"claude": mock_adapter}
+            mock_registry_class.return_value = mock_registry
+
+            result = runner.invoke(app, ["config", "--list"])
+
+            assert result.exit_code == 0
+            assert "Error listing config for claude" in result.stdout
+
+    def test_config_get_from_multiple_vendors(self) -> None:
+        """Test config KEY gets value from all vendors that have it."""
+        with patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class:
+            # Create mock adapters
+            mock_claude = MagicMock()
+            mock_claude.get_config.return_value = "dark"
+
+            mock_gemini = MagicMock()
+            mock_gemini.get_config.side_effect = KeyError("Not found")
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {
+                "claude": mock_claude,
+                "gemini": mock_gemini,
+            }
+            mock_registry_class.return_value = mock_registry
+
+            result = runner.invoke(app, ["config", "theme"])
+
+            assert result.exit_code == 0
+            assert "Claude:" in result.stdout
+            assert "dark" in result.stdout
+            # Gemini should be skipped silently
+
+    def test_config_set_to_multiple_vendors(self) -> None:
+        """Test config KEY VALUE sets to all configured vendors."""
+        with patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class:
+            # Create mock adapters
+            mock_claude = MagicMock()
+            mock_gemini = MagicMock()
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {
+                "claude": mock_claude,
+                "gemini": mock_gemini,
+            }
+            mock_registry_class.return_value = mock_registry
+
+            result = runner.invoke(app, ["config", "theme", "light"])
+
+            assert result.exit_code == 0
+            assert "Set theme = light for claude" in result.stdout
+            assert "Set theme = light for gemini" in result.stdout
+            mock_claude.set_config.assert_called_once_with("theme", "light")
+            mock_gemini.set_config.assert_called_once_with("theme", "light")
+
+    def test_config_get_key_not_found_in_any_vendor(self) -> None:
+        """Test config KEY when key doesn't exist in any vendor."""
+        with patch("ai_asst_mgr.cli.VendorRegistry") as mock_registry_class:
+            # Create mock adapters that don't have the key
+            mock_adapter = MagicMock()
+            mock_adapter.get_config.side_effect = KeyError("Not found")
+
+            mock_registry = MagicMock()
+            mock_registry.get_all_vendors.return_value = {"claude": mock_adapter}
+            mock_registry_class.return_value = mock_registry
+
+            result = runner.invoke(app, ["config", "nonexistent"])
+
+            assert result.exit_code == 1
+            assert "not found in any vendor" in result.stdout
+
+
+class TestConfigHelperFunctions:
+    """Tests for config command helper functions."""
+
+    def test_flatten_dict_simple(self) -> None:
+        """Test _flatten_dict with simple dict."""
+        result = _flatten_dict({"a": 1, "b": 2})
+        assert result == {"a": 1, "b": 2}
+
+    def test_flatten_dict_nested(self) -> None:
+        """Test _flatten_dict with nested dict."""
+        result = _flatten_dict({"a": {"b": {"c": 1}}})
+        assert result == {"a.b.c": 1}
+
+    def test_flatten_dict_mixed(self) -> None:
+        """Test _flatten_dict with mixed simple and nested values."""
+        result = _flatten_dict(
+            {
+                "version": "1.0.0",
+                "mcp": {"servers": {"brave": {"url": "https://brave.com"}}},
+                "theme": "dark",
+            }
+        )
+        assert result == {
+            "version": "1.0.0",
+            "mcp.servers.brave.url": "https://brave.com",
+            "theme": "dark",
+        }
+
+    def test_flatten_dict_empty(self) -> None:
+        """Test _flatten_dict with empty dict."""
+        result = _flatten_dict({})
+        assert result == {}
+
+    def test_format_config_value_string(self) -> None:
+        """Test _format_config_value with string."""
+        result = _format_config_value("test")
+        assert result == "test"
+
+    def test_format_config_value_bool_true(self) -> None:
+        """Test _format_config_value with True."""
+        result = _format_config_value(True)
+        assert "true" in result
+        assert "green" in result
+
+    def test_format_config_value_bool_false(self) -> None:
+        """Test _format_config_value with False."""
+        result = _format_config_value(False)
+        assert "false" in result
+        assert "red" in result
+
+    def test_format_config_value_none(self) -> None:
+        """Test _format_config_value with None."""
+        result = _format_config_value(None)
+        assert "null" in result
+        assert "dim" in result
+
+    def test_format_config_value_dict(self) -> None:
+        """Test _format_config_value with dict."""
+        result = _format_config_value({"host": "localhost", "port": 8080})
+        assert "host" in result
+        assert "localhost" in result
+        assert "port" in result
+
+    def test_format_config_value_list(self) -> None:
+        """Test _format_config_value with list."""
+        result = _format_config_value([1, 2, 3])
+        assert "1" in result
+        assert "2" in result
+        assert "3" in result
+
+    def test_format_config_value_number(self) -> None:
+        """Test _format_config_value with number."""
+        result = _format_config_value(42)
+        assert result == "42"
+
+    def test_parse_config_value_string(self) -> None:
+        """Test _parse_config_value with plain string."""
+        result = _parse_config_value("hello")
+        assert result == "hello"
+
+    def test_parse_config_value_boolean_true(self) -> None:
+        """Test _parse_config_value with 'true'."""
+        result = _parse_config_value("true")
+        assert result is True
+
+    def test_parse_config_value_boolean_false(self) -> None:
+        """Test _parse_config_value with 'false'."""
+        result = _parse_config_value("false")
+        assert result is False
+
+    def test_parse_config_value_number(self) -> None:
+        """Test _parse_config_value with number string."""
+        result = _parse_config_value("42")
+        assert result == 42
+
+    def test_parse_config_value_float(self) -> None:
+        """Test _parse_config_value with float string."""
+        result = _parse_config_value("3.14")
+        assert result == 3.14
+
+    def test_parse_config_value_json_object(self) -> None:
+        """Test _parse_config_value with JSON object."""
+        result = _parse_config_value('{"host":"localhost","port":8080}')
+        assert result == {"host": "localhost", "port": 8080}
+
+    def test_parse_config_value_json_array(self) -> None:
+        """Test _parse_config_value with JSON array."""
+        result = _parse_config_value("[1, 2, 3]")
+        assert result == [1, 2, 3]
+
+    def test_parse_config_value_null(self) -> None:
+        """Test _parse_config_value with 'null'."""
+        result = _parse_config_value("null")
+        assert result is None
