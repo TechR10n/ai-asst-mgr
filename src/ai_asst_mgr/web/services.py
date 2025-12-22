@@ -89,11 +89,30 @@ def get_dashboard_data() -> dict[str, Any]:
                 }
             )
 
+    # Get longitudinal trends and advanced metrics
+    trends = []
+    skill_profile = {}
+    efficiency_data = []
+    cognitive_load = {}
+    
+    db = _get_db()
+    if db:
+        # Default to Gemini for Phase 1 focus
+        vendor_focus = "gemini"
+        trends = db.get_longitudinal_stats(vendor_id=vendor_focus, weeks=8)
+        skill_profile = db.get_skill_profile_stats(vendor_id=vendor_focus)
+        efficiency_data = db.get_session_scatter_data(vendor_id=vendor_focus)
+        cognitive_load = db.get_weekly_event_breakdown(vendor_id=vendor_focus)
+
     return {
         "title": "Dashboard",
         "vendors": vendor_stats,
         "total_vendors": len(vendors),
         "installed_count": sum(1 for v in vendor_stats if v["installed"]),
+        "trends": trends,
+        "skill_profile": skill_profile,
+        "efficiency_data": efficiency_data,
+        "cognitive_load": cognitive_load,
         "last_updated": datetime.now(tz=UTC).isoformat(),
     }
 
@@ -266,6 +285,7 @@ def get_sessions_data(
     limit: int = 50,
     offset: int = 0,
     project_filter: str | None = None,
+    vendor_filter: str | None = "gemini",
 ) -> dict[str, Any]:
     """Get session history data for the sessions page.
 
@@ -273,6 +293,7 @@ def get_sessions_data(
         limit: Maximum number of sessions to return.
         offset: Number of sessions to skip.
         project_filter: Optional project path filter.
+        vendor_filter: Optional vendor filter (default: 'gemini', None for all).
 
     Returns:
         Dictionary containing session history.
@@ -296,10 +317,16 @@ def get_sessions_data(
     # Query sessions
     with db._connection() as conn:
         # Get distinct projects for filter dropdown
-        cursor = conn.execute(
-            "SELECT DISTINCT project_path FROM sessions "
-            "WHERE vendor_id = 'claude' ORDER BY project_path"
-        )
+        project_query = "SELECT DISTINCT project_path FROM sessions WHERE 1=1"
+        project_params: list[Any] = []
+        
+        if vendor_filter:
+            project_query += " AND vendor_id = ?"
+            project_params.append(vendor_filter)
+            
+        project_query += " ORDER BY project_path"
+        
+        cursor = conn.execute(project_query, project_params)
         projects = [row[0] for row in cursor.fetchall() if row[0]]
 
         # Build query with optional filter
@@ -307,9 +334,13 @@ def get_sessions_data(
             SELECT session_id, project_path, start_time, end_time,
                    duration_seconds, messages_count
             FROM sessions
-            WHERE vendor_id = 'claude'
+            WHERE 1=1
         """
         params: list[Any] = []
+
+        if vendor_filter:
+            query += " AND vendor_id = ?"
+            params.append(vendor_filter)
 
         if project_filter:
             query += " AND project_path = ?"
@@ -333,11 +364,17 @@ def get_sessions_data(
             )
 
         # Get total count
-        count_query = "SELECT COUNT(*) FROM sessions WHERE vendor_id = 'claude'"
+        count_query = "SELECT COUNT(*) FROM sessions WHERE 1=1"
         count_params: list[Any] = []
+        
+        if vendor_filter:
+            count_query += " AND vendor_id = ?"
+            count_params.append(vendor_filter)
+            
         if project_filter:
             count_query += " AND project_path = ?"
             count_params.append(project_filter)
+            
         cursor = conn.execute(count_query, count_params)
         total_sessions = cursor.fetchone()[0]
 
@@ -368,13 +405,13 @@ def get_session_detail(session_id: str) -> dict[str, Any]:
         return {"error": "Database not initialized", "session": None}
 
     with db._connection() as conn:
-        # Get session info
+        # Get session info - check regardless of vendor to support direct links
         cursor = conn.execute(
             """
             SELECT session_id, project_path, start_time, end_time,
-                   duration_seconds, messages_count
+                   duration_seconds, messages_count, vendor_id
             FROM sessions
-            WHERE session_id = ? AND vendor_id = 'claude'
+            WHERE session_id = ?
             """,
             (session_id,),
         )
@@ -390,6 +427,7 @@ def get_session_detail(session_id: str) -> dict[str, Any]:
             "end_time": row[3],
             "duration_seconds": row[4] or 0,
             "messages_count": row[5] or 0,
+            "vendor_id": row[6],
         }
 
         # Get events for this session
@@ -397,7 +435,7 @@ def get_session_detail(session_id: str) -> dict[str, Any]:
             """
             SELECT event_type, event_name, event_data, timestamp
             FROM events
-            WHERE session_id = ? AND vendor_id = 'claude'
+            WHERE session_id = ?
             ORDER BY timestamp
             """,
             (session_id,),
@@ -420,8 +458,11 @@ def get_session_detail(session_id: str) -> dict[str, Any]:
     }
 
 
-def get_sessions_stats() -> dict[str, Any]:
+def get_sessions_stats(vendor_filter: str | None = "gemini") -> dict[str, Any]:
     """Get session statistics for the API.
+
+    Args:
+        vendor_filter: Optional vendor filter (default: 'gemini', None for all).
 
     Returns:
         Dictionary containing session statistics.
@@ -441,15 +482,38 @@ def get_sessions_stats() -> dict[str, Any]:
 
     with db._connection() as conn:
         # Get project count
-        cursor = conn.execute(
-            "SELECT COUNT(DISTINCT project_path) FROM sessions WHERE vendor_id = 'claude'"
-        )
+        query = "SELECT COUNT(DISTINCT project_path) FROM sessions WHERE 1=1"
+        params: list[Any] = []
+        
+        if vendor_filter:
+            query += " AND vendor_id = ?"
+            params.append(vendor_filter)
+            
+        cursor = conn.execute(query, params)
         projects_count = cursor.fetchone()[0]
+        
+        # Get session counts if filtering (sync_status is global/claude-specific in current impl)
+        if vendor_filter and vendor_filter != 'claude':
+            # We need to query for the specific vendor since sync_status might be limited
+            cursor = conn.execute(
+                "SELECT COUNT(*) FROM sessions WHERE vendor_id = ?", 
+                (vendor_filter,)
+            )
+            session_count = cursor.fetchone()[0]
+            
+            cursor = conn.execute(
+                "SELECT COUNT(*) FROM events WHERE vendor_id = ?", 
+                (vendor_filter,)
+            )
+            event_count = cursor.fetchone()[0]
+        else:
+            session_count = sync_status.get("database_sessions", 0)
+            event_count = sync_status.get("database_events", 0)
 
     return {
         "db_initialized": True,
-        "total_sessions": sync_status.get("database_sessions", 0),
-        "total_messages": sync_status.get("database_events", 0),
+        "total_sessions": session_count,
+        "total_messages": event_count,
         "projects_count": projects_count,
         "last_synced": sync_status.get("last_synced_datetime"),
         "timestamp": datetime.now(tz=UTC).isoformat(),

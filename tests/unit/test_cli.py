@@ -4092,7 +4092,7 @@ class TestDatabaseCommands:
 
                     mock_sync.return_value = SyncResult(errors=["Error 1", "Error 2"])
 
-                    result = runner.invoke(app, ["db", "sync"])
+                    result = runner.invoke(app, ["db", "sync", "--vendor", "claude"])
                     assert result.exit_code == 0
                     assert "Completed with" in result.stdout
                     assert "errors" in result.stdout
@@ -4116,11 +4116,71 @@ class TestDatabaseCommands:
 
                     mock_sync.return_value = SyncResult(errors=[])
 
-                    result = runner.invoke(app, ["db", "sync"])
+                    result = runner.invoke(app, ["db", "sync", "--vendor", "claude"])
                     assert result.exit_code == 0
                     assert "Sync completed" in result.stdout
                     assert "10" in result.stdout
                     assert "50" in result.stdout
+
+    def test_db_sync_gemini_success(self, tmp_path: Path) -> None:
+        """Test db sync successful Gemini sync."""
+        db_path = tmp_path / "sessions.db"
+        db_path.touch()
+    
+        with patch("ai_asst_mgr.cli.DEFAULT_DB_PATH", db_path):
+            with patch("ai_asst_mgr.cli.DatabaseManager"):
+                with patch("ai_asst_mgr.cli.sync_gemini_history_to_db") as mock_sync:
+                    from ai_asst_mgr.database.sync_gemini import GeminiSyncResult
+    
+                    mock_sync.return_value = GeminiSyncResult(
+                        sessions_imported=5,
+                        messages_imported=20,
+                        thoughts_imported=10,
+                        tools_imported=15,
+                        sessions_skipped=0,
+                        errors=[]
+                    )
+    
+                    result = runner.invoke(app, ["db", "sync", "--vendor", "gemini"])
+                    assert result.exit_code == 0
+                    assert "Gemini Sync completed" in result.stdout
+                    assert "5" in result.stdout
+                    assert "20" in result.stdout
+                    assert "15" in result.stdout
+
+    def test_db_sync_gemini_with_errors(self, tmp_path: Path) -> None:
+        """Test db sync Gemini sync with errors."""
+        db_path = tmp_path / "sessions.db"
+        db_path.touch()
+    
+        with patch("ai_asst_mgr.cli.DEFAULT_DB_PATH", db_path):
+            with patch("ai_asst_mgr.cli.DatabaseManager"):
+                with patch("ai_asst_mgr.cli.sync_gemini_history_to_db") as mock_sync:
+                    from ai_asst_mgr.database.sync_gemini import GeminiSyncResult
+    
+                    mock_sync.return_value = GeminiSyncResult(
+                        sessions_imported=0,
+                        messages_imported=0,
+                        thoughts_imported=0,
+                        tools_imported=0,
+                        sessions_skipped=0,
+                        errors=["Error A", "Error B"]
+                    )
+    
+                    result = runner.invoke(app, ["db", "sync", "--vendor", "gemini"])
+                    assert result.exit_code == 0
+                    assert "Completed with 2 errors" in result.stdout
+                    assert "Error A" in result.stdout
+
+    def test_db_sync_unknown_vendor(self, tmp_path: Path) -> None:
+        """Test db sync with unknown vendor."""
+        db_path = tmp_path / "sessions.db"
+        db_path.touch()
+    
+        with patch("ai_asst_mgr.cli.DEFAULT_DB_PATH", db_path):
+            result = runner.invoke(app, ["db", "sync", "--vendor", "unknown"])
+            assert result.exit_code == 1
+            assert "Unknown vendor" in result.stdout
 
     def test_db_status_without_database(self, tmp_path: Path) -> None:
         """Test db status fails when database doesn't exist."""

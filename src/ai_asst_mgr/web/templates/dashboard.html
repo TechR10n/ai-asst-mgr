@@ -29,6 +29,226 @@
     {% endif %}
 </div>
 
+<!-- Charts Grid - Always rendered, charts handle empty data gracefully -->
+<div class="charts-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(450px, 1fr)); gap: 1.5rem; margin-bottom: 1.5rem;">
+    
+    <!-- 1. Performance Trends (Line) -->
+    <div class="card" style="margin-bottom: 0;">
+        <div class="card-header">
+            <h2 class="card-title">Velocity Trends</h2>
+        </div>
+        <div style="height: 300px; width: 100%;">
+            <canvas id="trendChart"></canvas>
+        </div>
+    </div>
+
+    <!-- 2. Skill Profile (Radar) -->
+    <div class="card" style="margin-bottom: 0;">
+        <div class="card-header">
+            <h2 class="card-title">Skill Profile</h2>
+        </div>
+        <div style="height: 300px; width: 100%;">
+            <canvas id="skillChart"></canvas>
+        </div>
+    </div>
+
+    <!-- 3. Efficiency Frontier (Scatter) -->
+    <div class="card" style="margin-bottom: 0;">
+        <div class="card-header">
+            <h2 class="card-title">Efficiency Frontier (ROI)</h2>
+        </div>
+        <div style="height: 300px; width: 100%;">
+            <canvas id="efficiencyChart"></canvas>
+        </div>
+    </div>
+
+    <!-- 4. Cognitive Load (Stacked Bar) -->
+    <div class="card" style="margin-bottom: 0;">
+        <div class="card-header">
+            <h2 class="card-title">Cognitive Load</h2>
+        </div>
+        <div style="height: 300px; width: 100%;">
+            <canvas id="cognitiveChart"></canvas>
+        </div>
+    </div>
+</div>
+
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // Helper to check if data exists
+        function hasData(obj) {
+            return obj && Object.keys(obj).length > 0;
+        }
+
+        // 1. Trend Chart
+        const trendCtx = document.getElementById('trendChart').getContext('2d');
+        const trends = {{ data.trends | tojson }};
+        
+        if (trends && trends.length > 0) {
+            new Chart(trendCtx, {
+                type: 'line',
+                data: {
+                    labels: trends.map(t => t.week),
+                    datasets: [
+                        {
+                            label: 'Leverage (PLR)',
+                            data: trends.map(t => t.plr),
+                            borderColor: 'rgb(75, 192, 192)',
+                            backgroundColor: 'rgba(75, 192, 192, 0.1)',
+                            yAxisID: 'y',
+                            tension: 0.1,
+                            fill: true
+                        },
+                        {
+                            label: 'Velocity (Actions/Min)',
+                            data: trends.map(t => t.action_density),
+                            borderColor: 'rgb(255, 99, 132)',
+                            backgroundColor: 'rgba(255, 99, 132, 0.1)',
+                            yAxisID: 'y1',
+                            tension: 0.1,
+                            fill: true
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: { mode: 'index', intersect: false },
+                    scales: {
+                        y: { type: 'linear', display: true, position: 'left', title: { display: true, text: 'PLR' } },
+                        y1: { type: 'linear', display: true, position: 'right', grid: { drawOnChartArea: false }, title: { display: true, text: 'Velocity' } }
+                    }
+                }
+            });
+        } else {
+            trendCtx.font = "14px Arial";
+            trendCtx.fillText("No trend data available yet.", 10, 50);
+        }
+
+        // 2. Skill Radar
+        const skillCtx = document.getElementById('skillChart').getContext('2d');
+        const skills = {{ data.skill_profile | tojson }};
+        
+        if (hasData(skills)) {
+            new Chart(skillCtx, {
+                type: 'radar',
+                data: {
+                    labels: ['Leverage', 'Precision', 'Diversity', 'Autonomy', 'Reasoning'],
+                    datasets: [{
+                        label: 'Current Skill Level',
+                        data: [
+                            skills.leverage || 0, 
+                            skills.precision || 0, 
+                            skills.diversity || 0, 
+                            skills.autonomy || 0, 
+                            skills.reasoning || 0
+                        ],
+                        fill: true,
+                        backgroundColor: 'rgba(54, 162, 235, 0.2)',
+                        borderColor: 'rgb(54, 162, 235)',
+                        pointBackgroundColor: 'rgb(54, 162, 235)',
+                        pointBorderColor: '#fff',
+                        pointHoverBackgroundColor: '#fff',
+                        pointHoverBorderColor: 'rgb(54, 162, 235)'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        r: {
+                            angleLines: { display: true },
+                            suggestedMin: 0,
+                            suggestedMax: 10
+                        }
+                    }
+                }
+            });
+        } else {
+            skillCtx.font = "14px Arial";
+            skillCtx.fillText("No skill data available yet.", 10, 50);
+        }
+
+        // 3. Efficiency Scatter
+        const effCtx = document.getElementById('efficiencyChart').getContext('2d');
+        const effData = {{ data.efficiency_data | tojson }};
+        
+        if (effData && effData.length > 0) {
+            new Chart(effCtx, {
+                type: 'scatter',
+                data: {
+                    datasets: [{
+                        label: 'Sessions',
+                        data: effData,
+                        backgroundColor: 'rgba(255, 206, 86, 0.6)'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: { type: 'linear', position: 'bottom', title: {display: true, text: 'Duration (Minutes)'} },
+                        y: { title: {display: true, text: 'Value (Tool Calls)'} }
+                    },
+                    plugins: {
+                        tooltip: {
+                            callbacks: {
+                                label: function(ctx) {
+                                    return `Session ${ctx.raw.id.substring(0,6)}: ${ctx.raw.y} actions in ${ctx.raw.x}m`;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        } else {
+            effCtx.font = "14px Arial";
+            effCtx.fillText("No session data available yet.", 10, 50);
+        }
+
+        // 4. Cognitive Load Stacked Bar
+        const cogCtx = document.getElementById('cognitiveChart').getContext('2d');
+        const cogData = {{ data.cognitive_load | tojson }};
+        
+        if (hasData(cogData) && cogData.weeks && cogData.weeks.length > 0) {
+            new Chart(cogCtx, {
+                type: 'bar',
+                data: {
+                    labels: cogData.weeks,
+                    datasets: [
+                        {
+                            label: 'Reasoning',
+                            data: cogData.thoughts,
+                            backgroundColor: 'rgba(153, 102, 255, 0.6)',
+                        },
+                        {
+                            label: 'Action',
+                            data: cogData.actions,
+                            backgroundColor: 'rgba(75, 192, 192, 0.6)',
+                        },
+                        {
+                            label: 'Communication',
+                            data: cogData.messages,
+                            backgroundColor: 'rgba(201, 203, 207, 0.6)',
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: { stacked: true },
+                        y: { stacked: true, title: {display: true, text: 'Events'} }
+                    }
+                }
+            });
+        } else {
+            cogCtx.font = "14px Arial";
+            cogCtx.fillText("No event data available yet.", 10, 50);
+        }
+    });
+</script>
+
 <div class="card">
     <div class="card-header">
         <h2 class="card-title">Vendors</h2>

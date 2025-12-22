@@ -25,6 +25,7 @@ from ai_asst_mgr.capabilities import AgentType, UniversalAgentManager
 from ai_asst_mgr.coaches import ClaudeCoach, CodexCoach, GeminiCoach, Priority
 from ai_asst_mgr.database import DatabaseManager
 from ai_asst_mgr.database.sync import get_sync_status, sync_history_to_db
+from ai_asst_mgr.database.sync_gemini import sync_gemini_history_to_db
 from ai_asst_mgr.operations import (
     BackupManager,
     MergeStrategy,
@@ -3309,19 +3310,24 @@ def db_init(
 
 @db_app.command("sync")
 def db_sync(
+    vendor: Annotated[
+        str,
+        typer.Option("--vendor", "-v", help="Vendor to sync (claude or gemini)"),
+    ] = "gemini",
     full: Annotated[
         bool,
         typer.Option("--full", "-f", help="Full sync (ignore last sync state)"),
     ] = False,
 ) -> None:
-    """Sync Claude Code history to the database.
+    """Sync session history to the database.
 
-    Imports session data from ~/.claude/history.jsonl into the database.
-    By default, only imports entries since the last sync.
+    Imports session data from vendor logs into the database.
+    Supports Claude (.claude/history.jsonl) and Gemini (.gemini/tmp/...).
 
     Examples:
-        ai-asst-mgr db sync         # Sync new entries only
-        ai-asst-mgr db sync --full  # Full sync (re-import all)
+        ai-asst-mgr db sync                  # Sync Gemini (default)
+        ai-asst-mgr db sync --vendor claude  # Sync Claude
+        ai-asst-mgr db sync --full           # Full sync
     """
     if not DEFAULT_DB_PATH.exists():
         console.print("[red]Database not found![/red]\nRun [bold]ai-asst-mgr db init[/bold] first.")
@@ -3329,24 +3335,49 @@ def db_sync(
 
     db = DatabaseManager(DEFAULT_DB_PATH)
 
-    console.print("[dim]Syncing Claude history to database...[/dim]")
-    result = sync_history_to_db(db, full_sync=full)
-
-    if result.errors:
-        console.print(f"[yellow]Completed with {len(result.errors)} errors[/yellow]")
-        for error in result.errors[:5]:
-            console.print(f"  [red]• {error}[/red]")
-    else:
+    if vendor.lower() == "claude":
+        console.print("[dim]Syncing Claude history to database...[/dim]")
+        result = sync_history_to_db(db, full_sync=full)
+        
+        if result.errors:
+            console.print(f"[yellow]Completed with {len(result.errors)} errors[/yellow]")
+            for error in result.errors[:5]:
+                console.print(f"  [red]• {error}[/red]")
+        else:
+            console.print(
+                Panel.fit(
+                    f"[bold green]Sync completed![/bold green]\n\n"
+                    f"Sessions imported: [cyan]{result.sessions_imported}[/cyan]\n"
+                    f"Messages imported: [cyan]{result.messages_imported}[/cyan]\n"
+                    f"Sessions skipped:  [dim]{result.sessions_skipped}[/dim]",
+                    title="Claude Sync Results",
+                    border_style="green",
+                )
+            )
+            
+    elif vendor.lower() == "gemini":
+        console.print("[dim]Syncing Gemini history from logs...[/dim]")
+        gemini_result = sync_gemini_history_to_db(db, full_sync=full)
+        
+        if gemini_result.errors:
+            console.print(f"[yellow]Completed with {len(gemini_result.errors)} errors[/yellow]")
+            for error in gemini_result.errors[:5]:
+                console.print(f"  [red]• {error}[/red]")
+        
         console.print(
             Panel.fit(
-                f"[bold green]Sync completed![/bold green]\n\n"
-                f"Sessions imported: [cyan]{result.sessions_imported}[/cyan]\n"
-                f"Messages imported: [cyan]{result.messages_imported}[/cyan]\n"
-                f"Sessions skipped:  [dim]{result.sessions_skipped}[/dim]",
-                title="Sync Results",
+                f"[bold green]Gemini Sync completed![/bold green]\n\n"
+                f"Sessions found:    [cyan]{gemini_result.sessions_imported}[/cyan]\n"
+                f"Messages parsed:   [cyan]{gemini_result.messages_imported}[/cyan]\n"
+                f"Thoughts parsed:   [cyan]{gemini_result.thoughts_imported}[/cyan]\n"
+                f"Tool calls parsed: [cyan]{gemini_result.tools_imported}[/cyan]",
+                title="Gemini Sync Results",
                 border_style="green",
             )
         )
+    else:
+        console.print(f"[red]Unknown vendor: {vendor}[/red]")
+        raise typer.Exit(1)
 
 
 @db_app.command("status")

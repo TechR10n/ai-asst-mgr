@@ -717,6 +717,7 @@ class TestSessionServices:
             "2025-01-01",
             100,
             5,
+            "gemini",
         )
         mock_cursor.fetchall.return_value = [("message", "user", "{}", "2025-01-01T00:00:00")]
         mock_conn.execute.return_value = mock_cursor
@@ -728,6 +729,7 @@ class TestSessionServices:
         data = get_session_detail("sess1")
         assert data["session"] is not None
         assert data["session"]["session_id"] == "sess1"
+        assert data["session"]["vendor_id"] == "gemini"
         assert len(data["events"]) == 1
 
     @patch("ai_asst_mgr.web.services._get_db")
@@ -773,7 +775,8 @@ class TestSessionServices:
         mock_conn = MagicMock()
         mock_cursor = MagicMock()
 
-        mock_cursor.fetchone.return_value = (5,)  # projects count
+        # projects count, sessions count, events count
+        mock_cursor.fetchone.side_effect = [(5,), (10,), (50,)]
         mock_conn.execute.return_value = mock_cursor
         mock_conn.__enter__ = MagicMock(return_value=mock_conn)
         mock_conn.__exit__ = MagicMock(return_value=False)
@@ -786,10 +789,12 @@ class TestSessionServices:
             "last_synced_datetime": "2025-01-01T00:00:00",
         }
 
+        # Default is gemini
         data = get_sessions_stats()
         assert data["db_initialized"] is True
         assert data["projects_count"] == 5
         assert data["total_sessions"] == 10
+        assert data["total_messages"] == 50
 
 
 class TestServiceHelpers:

@@ -665,6 +665,261 @@ class DatabaseManager:
 
         return [dict(row) for row in rows]
 
+    def get_tool_stats(self, vendor_id: str | None = None) -> dict[str, int]:
+        """Get aggregated tool usage statistics.
+
+        Args:
+            vendor_id: Optional vendor filter.
+
+        Returns:
+            Dictionary mapping tool names to usage counts.
+        """
+        query = """
+            SELECT event_name, COUNT(*) as count
+            FROM events
+            WHERE event_type = 'tool_call'
+        """
+        params: list[Any] = []
+
+        if vendor_id:
+            query += " AND vendor_id = ?"
+            params.append(vendor_id)
+
+        query += " GROUP BY event_name"
+
+        with self._connection() as conn:
+            cursor = conn.execute(query, params)
+            return {row["event_name"]: row["count"] for row in cursor.fetchall()}
+
+    def get_inefficient_sessions(
+        self,
+        vendor_id: str | None = None,
+        min_messages: int = 5,
+        max_tools: int = 0,
+        limit: int = 5
+    ) -> list[dict[str, Any]]:
+        """Get sessions that might be inefficient (high chat, low action).
+
+        Args:
+            vendor_id: Optional vendor filter.
+            min_messages: Minimum number of messages to consider.
+            max_tools: Maximum number of tool calls to consider inefficient.
+            limit: Max results to return.
+
+        Returns:
+            List of inefficient session dictionaries.
+        """
+        query = """
+            SELECT session_id, duration_seconds, messages_count, tool_calls_count, start_time
+            FROM sessions
+            WHERE messages_count >= ? AND tool_calls_count <= ?
+        """
+        params: list[Any] = [min_messages, max_tools]
+
+        if vendor_id:
+            query += " AND vendor_id = ?"
+            params.append(vendor_id)
+
+        query += " ORDER BY messages_count DESC LIMIT ?"
+        params.append(limit)
+
+        with self._connection() as conn:
+            cursor = conn.execute(query, params)
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_longitudinal_stats(self, vendor_id: str = "gemini", weeks: int = 4) -> list[dict[str, Any]]:
+        """Get longitudinal performance metrics grouped by week.
+
+        Calculates:
+        - Prompt Leverage Ratio (Tool Calls / User Messages)
+        - Action Density (Tool Calls / Duration Minutes)
+        - Error Rate (Errors / Total Events)
+
+        Args:
+            vendor_id: Vendor to analyze.
+            weeks: Number of weeks to look back.
+
+        Returns:
+            List of weekly stat dictionaries.
+        """
+        cutoff = (datetime.now(tz=UTC) - timedelta(weeks=weeks)).strftime("%Y-%m-%d")
+        
+        query = """
+            SELECT 
+                strftime('%Y-W%W', start_time) as week,
+                COUNT(*) as total_sessions,
+                SUM(messages_count) as total_messages,
+                SUM(tool_calls_count) as total_tools,
+                SUM(errors_count) as total_errors,
+                SUM(duration_seconds) as total_duration
+            FROM sessions
+            WHERE vendor_id = ? AND start_time >= ?
+            GROUP BY week
+            ORDER BY week ASC
+        """
+        
+        results = []
+        with self._connection() as conn:
+            cursor = conn.execute(query, (vendor_id, cutoff))
+            rows = cursor.fetchall()
+            
+            for row in rows:
+                tools = row["total_tools"] or 0
+                msgs = row["total_messages"] or 1 # Avoid div by zero
+                duration_min = (row["total_duration"] or 0) / 60
+                
+                # Metrics
+                plr = round(tools / msgs, 2) if msgs > 0 else 0
+                density = round(tools / duration_min, 2) if duration_min > 0 else 0
+                
+                results.append({
+                    "week": row["week"],
+                    "sessions": row["total_sessions"],
+                    "plr": plr,
+                    "action_density": density,
+                    "tools": tools
+                })
+                
+        return results
+
+    def get_skill_profile_stats(self, vendor_id: str = "gemini", days: int = 30) -> dict[str, float]:
+        """Get raw metrics for the Skill Profile radar chart.
+
+        Returns:
+            Dictionary with normalized metrics (0-10 approx) for:
+            - leverage (PLR)
+            - precision (Inverse Error Rate)
+            - diversity (Unique Tools)
+            - autonomy (Max Tools in Session)
+            - reasoning (Thoughts per Action)
+        """
+        cutoff = (datetime.now(tz=UTC) - timedelta(days=days)).isoformat()
+        
+        with self._connection() as conn:
+            # 1. Leverage & Precision & Autonomy
+            cursor = conn.execute(
+                """
+                SELECT 
+                    SUM(tool_calls_count) as total_tools,
+                    SUM(messages_count) as total_msgs,
+                    SUM(errors_count) as total_errors,
+                    MAX(tool_calls_count) as max_autonomy
+                FROM sessions
+                WHERE vendor_id = ? AND start_time >= ?
+                """,
+                (vendor_id, cutoff)
+            )
+            row = cursor.fetchone()
+            total_tools = row["total_tools"] or 0
+            total_msgs = row["total_msgs"] or 1
+            total_errors = row["total_errors"] or 0
+            max_autonomy = row["max_autonomy"] or 0
+            
+            # 2. Diversity
+            cursor = conn.execute(
+                """
+                SELECT COUNT(DISTINCT event_name) as count
+                FROM events
+                WHERE vendor_id = ? AND event_type = 'tool_call' AND timestamp >= ?
+                """,
+                (vendor_id, cutoff)
+            )
+            diversity = cursor.fetchone()["count"]
+            
+            # 3. Reasoning
+            cursor = conn.execute(
+                """
+                SELECT event_type, COUNT(*) as count
+                FROM events
+                WHERE vendor_id = ? AND event_type IN ('tool_call', 'thought') AND timestamp >= ?
+                GROUP BY event_type
+                """,
+                (vendor_id, cutoff)
+            )
+            counts = {r["event_type"]: r["count"] for r in cursor.fetchall()}
+            thoughts = counts.get("thought", 0)
+            actions = counts.get("tool_call", 1) # Avoid div 0
+
+        # Calculate Raw Metrics
+        leverage = total_tools / total_msgs if total_msgs > 0 else 0
+        precision = 1.0 - (total_errors / (total_tools + total_errors)) if (total_tools + total_errors) > 0 else 1.0
+        reasoning_ratio = thoughts / actions if actions > 0 else 0
+        
+        return {
+            "leverage": round(leverage, 2),
+            "precision": round(precision * 10, 2), # Scale 0-1 to 0-10
+            "diversity": diversity,
+            "autonomy": max_autonomy,
+            "reasoning": round(reasoning_ratio * 5, 2) # Scale up reasoning
+        }
+
+    def get_session_scatter_data(self, vendor_id: str = "gemini", limit: int = 50) -> list[dict[str, Any]]:
+        """Get session data for the Efficiency Frontier scatter plot.
+
+        Returns:
+            List of dicts with {x: duration, y: tools, id: session_id}
+        """
+        with self._connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT session_id, duration_seconds, tool_calls_count
+                FROM sessions
+                WHERE vendor_id = ? AND duration_seconds > 0
+                ORDER BY start_time DESC
+                LIMIT ?
+                """,
+                (vendor_id, limit)
+            )
+            return [
+                {
+                    "x": round(row["duration_seconds"] / 60, 1), # Minutes
+                    "y": row["tool_calls_count"],
+                    "id": row["session_id"]
+                }
+                for row in cursor.fetchall()
+            ]
+
+    def get_weekly_event_breakdown(self, vendor_id: str = "gemini", weeks: int = 8) -> dict[str, list[Any]]:
+        """Get weekly event counts for Cognitive Load stacked bar chart.
+
+        Returns:
+            Dict with lists for 'weeks', 'thoughts', 'actions', 'messages'.
+        """
+        cutoff = (datetime.now(tz=UTC) - timedelta(weeks=weeks)).strftime("%Y-%m-%d")
+        
+        query = """
+            SELECT 
+                strftime('%Y-W%W', timestamp) as week,
+                event_type,
+                COUNT(*) as count
+            FROM events
+            WHERE vendor_id = ? AND timestamp >= ? 
+                AND event_type IN ('message', 'tool_call', 'thought')
+            GROUP BY week, event_type
+            ORDER BY week ASC
+        """
+        
+        data: dict[str, dict[str, int]] = {} # week -> {type: count}
+        all_weeks = set()
+        
+        with self._connection() as conn:
+            cursor = conn.execute(query, (vendor_id, cutoff))
+            for row in cursor.fetchall():
+                w = row["week"]
+                all_weeks.add(w)
+                if w not in data:
+                    data[w] = {"message": 0, "tool_call": 0, "thought": 0}
+                data[w][row["event_type"]] = row["count"]
+                
+        sorted_weeks = sorted(list(all_weeks))
+        
+        return {
+            "weeks": sorted_weeks,
+            "messages": [data[w]["message"] for w in sorted_weeks],
+            "actions": [data[w]["tool_call"] for w in sorted_weeks],
+            "thoughts": [data[w]["thought"] for w in sorted_weeks]
+        }
+
     # GitHub commit methods
 
     def record_github_commit(self, commit: GitHubCommit) -> bool:

@@ -266,14 +266,17 @@ class TestGeminiCoachExport:
         """Test markdown export with no insights."""
         # Create coach with non-existent directory (no config at all)
         nonexistent_dir = tmp_path / ".gemini_nonexistent"
-        coach = GeminiCoach(config_dir=nonexistent_dir)
-        coach.analyze()
-        output_path = tmp_path / "report"
-
-        result_path = coach.export_report(output_path, format="markdown")
-
-        content = result_path.read_text()
-        assert "_No insights available._" in content
+        
+        from unittest.mock import patch
+        with patch("ai_asst_mgr.coaches.gemini.DEFAULT_DB_PATH", tmp_path / "nonexistent.db"):
+            coach = GeminiCoach(config_dir=nonexistent_dir)
+            coach.analyze()
+            output_path = tmp_path / "report"
+    
+            result_path = coach.export_report(output_path, format="markdown")
+    
+            content = result_path.read_text()
+            assert "_No insights available._" in content
         assert "_No recommendations at this time._" in content
 
 

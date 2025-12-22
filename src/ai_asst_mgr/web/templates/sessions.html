@@ -5,7 +5,7 @@
 {% block content %}
 <div class="page-header">
     <h1>Session History</h1>
-    <p>Claude Code session activity from your history</p>
+    <p>Gemini session activity from your history</p>
 </div>
 
 {% if not data.db_initialized %}
@@ -17,7 +17,7 @@
     <p style="margin-top: 1rem;">Run these commands to set up session tracking:</p>
     <ul style="margin-top: 0.5rem; margin-left: 1.5rem;">
         <li><code>ai-asst-mgr db init</code> - Initialize the database</li>
-        <li><code>ai-asst-mgr db sync</code> - Import Claude history</li>
+        <li><code>ai-asst-mgr db sync</code> - Import session history</li>
     </ul>
 </div>
 {% else %}
